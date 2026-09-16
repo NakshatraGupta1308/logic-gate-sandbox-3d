@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import type { ThreeEvent } from '@react-three/fiber'
 import { Html, RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
@@ -19,7 +19,7 @@ interface GateMeshProps {
   gate: Gate
 }
 
-export function GateMesh({ gate }: GateMeshProps) {
+function GateMeshComponent({ gate }: GateMeshProps) {
   const def = getGateDef(gate.kind)
   const selectedGateId = useCircuitStore((s) => s.selectedGateId)
   const isInteracting = useCircuitStore((s) => s.isInteracting)
@@ -229,3 +229,9 @@ export function GateMesh({ gate }: GateMeshProps) {
     </group>
   )
 }
+
+// The scene layer keeps a stable `gate` reference for gates whose visible
+// fields haven't changed since the last simulation pass (see refresh() in
+// circuitStore.ts), so memoizing here skips re-rendering every other gate
+// in the circuit whenever one gate's value flips.
+export const GateMesh = memo(GateMeshComponent)

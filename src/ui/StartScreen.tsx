@@ -3,6 +3,16 @@ import type { GateKind } from '../engine'
 
 const PREVIEW_KINDS: GateKind[] = ['AND', 'OR', 'NOT', 'XOR', 'NAND', 'NOR', 'XNOR']
 
+// Kicks off the same dynamic import App.tsx's React.lazy() uses for
+// SceneRoot, so hovering or focusing Build starts fetching the heavy
+// three.js/drei chunk before the click even lands.
+let sceneFetchStarted = false
+function prefetchScene() {
+  if (sceneFetchStarted) return
+  sceneFetchStarted = true
+  import('../scene/SceneRoot')
+}
+
 interface ShortcutRow {
   action: string
   windows: string
@@ -63,6 +73,8 @@ export function StartScreen({ onStart }: StartScreenProps) {
           <button
             type="button"
             onClick={onStart}
+            onPointerEnter={prefetchScene}
+            onFocus={prefetchScene}
             className="comic-btn mt-6 px-8 py-3 text-lg font-extrabold"
           >
             Build
@@ -98,7 +110,8 @@ export function StartScreen({ onStart }: StartScreenProps) {
           <p className="mt-3 text-xs font-medium text-neutral-600">
             Mouse: click a gate in the toolbar then click the workbench to place it. Drag from an
             output pin to an input pin to wire them. Click an INPUT gate to toggle it. Orbit, zoom,
-            and pan the camera freely with the mouse.
+            and pan the camera freely with the mouse. Don't want to start from scratch? Load a
+            ready-made circuit from the Examples section in the toolbar.
           </p>
         </div>
       </div>

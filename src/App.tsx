@@ -1,9 +1,24 @@
-import { useEffect, useState } from 'react'
-import { SceneRoot } from './scene/SceneRoot'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Toolbar } from './ui/Toolbar'
 import { Inspector } from './ui/Inspector'
 import { StartScreen } from './ui/StartScreen'
 import { useCircuitStore } from './state/circuitStore'
+
+// The 3D scene pulls in three.js/@react-three/fiber/drei, by far the
+// heaviest part of the bundle. Loading it lazily means the start screen
+// paints immediately, without waiting on or parsing that code at all until
+// the user actually clicks Build.
+const SceneRoot = lazy(() => import('./scene/SceneRoot').then((m) => ({ default: m.SceneRoot })))
+
+function SceneLoading() {
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-white">
+      <div className="comic-card px-6 py-4 text-sm font-bold text-black">
+        Loading workbench...
+      </div>
+    </div>
+  )
+}
 
 function App() {
   const [started, setStarted] = useState(false)
@@ -55,7 +70,9 @@ function App() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-white">
-      <SceneRoot />
+      <Suspense fallback={<SceneLoading />}>
+        <SceneRoot />
+      </Suspense>
       <div className="pointer-events-none absolute inset-0">
         <Toolbar />
         <Inspector />

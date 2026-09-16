@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { ContactShadows, OrbitControls } from '@react-three/drei'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
@@ -32,6 +32,27 @@ function PendingWireLine() {
   const dragPoint = useCircuitStore((s) => s.dragPoint)
   const gates = useCircuitStore((s) => s.gates)
 
+  // Built once and mutated in place on every drag update (mousemove can
+  // fire dozens of times a second), rather than allocating a fresh
+  // geometry/material/Line for each point and leaking the previous ones.
+  const line = useMemo(() => {
+    const geometry = new THREE.BufferGeometry()
+    const material = new THREE.LineDashedMaterial({
+      color: '#facc15',
+      dashSize: 0.1,
+      gapSize: 0.08,
+    })
+    return new THREE.Line(geometry, material)
+  }, [])
+
+  useEffect(
+    () => () => {
+      line.geometry.dispose()
+      ;(line.material as THREE.Material).dispose()
+    },
+    [line],
+  )
+
   if (!pendingWireFrom || !dragPoint) return null
   const fromGate = gates.find((g) => g.id === pendingWireFrom.gateId)
   if (!fromGate) return null
@@ -39,21 +60,10 @@ function PendingWireLine() {
   const from = new THREE.Vector3(...pinPosition(fromGate, true, pendingWireFrom.pin))
   const to = new THREE.Vector3(...dragPoint)
   const curve = buildWireCurve(from, to)
-  const points = curve.getPoints(16)
-
-  return <primitive object={makeDashedLine(points)} />
-}
-
-function makeDashedLine(points: THREE.Vector3[]): THREE.Line {
-  const geometry = new THREE.BufferGeometry().setFromPoints(points)
-  const material = new THREE.LineDashedMaterial({
-    color: '#facc15',
-    dashSize: 0.1,
-    gapSize: 0.08,
-  })
-  const line = new THREE.Line(geometry, material)
+  line.geometry.setFromPoints(curve.getPoints(16))
   line.computeLineDistances()
-  return line
+
+  return <primitive object={line} />
 }
 
 function CameraRig() {
@@ -80,7 +90,7 @@ function CameraRig() {
 export function SceneRoot() {
   const gates = useCircuitStore((s) => s.gates)
   const wires = useCircuitStore((s) => s.wires)
-  const gateById = new Map(gates.map((g) => [g.id, g]))
+  const gateById = useMemo(() => new Map(gates.map((g) => [g.id, g])), [gates])
 
   return (
     <Canvas camera={{ position: [6, 5, 8], fov: 50 }}>
