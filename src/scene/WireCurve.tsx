@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react'
+import { memo, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { Gate, Wire } from '../engine'
@@ -16,7 +16,7 @@ interface WireCurveProps {
   toGate: Gate
 }
 
-export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
+function WireCurveComponent({ wire, fromGate, toGate }: WireCurveProps) {
   const selectedWireId = useCircuitStore((s) => s.selectedWireId)
   const select = useCircuitStore((s) => s.select)
   const removeWire = useCircuitStore((s) => s.removeWire)
@@ -30,20 +30,17 @@ export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
     return buildWireCurve(from, to)
   }, [fromGate, toGate, wire.from.pin, wire.to.pin])
 
+  // The outline tube doubles as the click/double-click hit target: the
+  // visible copy uses BackSide so the colored core shows through (which
+  // would otherwise shrink clicks down to the thin rim), while this same
+  // geometry, reused rather than duplicated, also backs an invisible
+  // FrontSide mesh sized for full-width hit testing.
   const outlineGeometry = useMemo(
     () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, OUTLINE_RADIUS, 8, false),
     [curve],
   )
   const coreGeometry = useMemo(
     () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, CORE_RADIUS, 8, false),
-    [curve],
-  )
-  // A separate invisible tube (full outline radius) is the actual click
-  // target: the visible outline mesh uses BackSide so the colored core
-  // shows through, which would otherwise shrink the clickable area down
-  // to the thin rim.
-  const hitGeometry = useMemo(
-    () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, OUTLINE_RADIUS, 8, false),
     [curve],
   )
 
@@ -69,7 +66,7 @@ export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
         removeWire(wire.id)
       }}
     >
-      <mesh geometry={hitGeometry}>
+      <mesh geometry={outlineGeometry}>
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
       {/* Same inverted-hull trick as the gate outlines: a larger BackSide
@@ -96,3 +93,8 @@ export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
     </group>
   )
 }
+
+// See the matching note on GateMesh: circuitStore keeps a stable `wire`
+// reference (wires never change after creation) so this only re-renders
+// when the gates it's actually attached to move or change value.
+export const WireCurve = memo(WireCurveComponent)
