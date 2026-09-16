@@ -33,6 +33,7 @@ function GateMeshComponent({ gate }: GateMeshProps) {
   const beginWireDrag = useCircuitStore((s) => s.beginWireDrag)
   const setHoveredPin = useCircuitStore((s) => s.setHoveredPin)
   const completeWireDrag = useCircuitStore((s) => s.completeWireDrag)
+  const pushHistory = useCircuitStore((s) => s.pushHistory)
 
   const isSelected = selectedGateId === gate.id
   const isDragging = useRef(false)
@@ -71,7 +72,12 @@ function GateMeshComponent({ gate }: GateMeshProps) {
     const point = new THREE.Vector3()
     dragPlane.constant = -gate.position[1]
     if (!e.ray.intersectPlane(dragPlane, point)) return
-    if (point.distanceTo(downPoint.current) > DRAG_THRESHOLD) dragMoved.current = true
+    if (point.distanceTo(downPoint.current) > DRAG_THRESHOLD) {
+      // Record one undo step for the whole drag, right before it actually
+      // starts moving, rather than one per pointermove.
+      if (!dragMoved.current) pushHistory()
+      dragMoved.current = true
+    }
     moveGate(gate.id, [snapToGrid(point.x), gate.position[1], snapToGrid(point.z)])
   }
 

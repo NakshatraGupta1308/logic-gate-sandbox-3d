@@ -1,5 +1,4 @@
-import { getGateDef } from '../engine'
-import { GATE_SYMBOL } from '../scene/gateVisuals'
+import { GateInfo } from '../scene/GateTooltip'
 import { useCircuitStore } from '../state/circuitStore'
 
 export function Inspector() {
@@ -16,18 +15,12 @@ export function Inspector() {
   if (!selectedGate && !selectedWire && !statusMessage) return null
 
   return (
-    <div className="comic-card pointer-events-auto absolute bottom-4 right-4 w-64 p-4 text-sm text-black">
+    <div className="comic-card pointer-events-auto absolute bottom-4 right-4 w-72 p-4 text-sm text-black">
       {selectedGate && (
         <div className="flex flex-col gap-2">
-          <h2 className="flex items-center gap-2 text-sm font-extrabold">
-            <span className="text-lg leading-none">{GATE_SYMBOL[selectedGate.kind]}</span>
-            {getGateDef(selectedGate.kind).label} gate
-          </h2>
+          <GateInfo gate={selectedGate} />
           <p className="text-xs font-medium text-neutral-600">
             Position: {selectedGate.position.map((n) => n.toFixed(1)).join(', ')}
-          </p>
-          <p className="text-xs font-medium text-neutral-600">
-            Output: {selectedGate.outputValues.map((v) => (v ? '1' : '0')).join(', ') || 'n/a'}
           </p>
           <button
             type="button"

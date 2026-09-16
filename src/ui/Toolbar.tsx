@@ -23,6 +23,10 @@ export function Toolbar() {
   const saveToStorage = useCircuitStore((s) => s.saveToStorage)
   const loadFromStorage = useCircuitStore((s) => s.loadFromStorage)
   const resetView = useCircuitStore((s) => s.resetView)
+  const undo = useCircuitStore((s) => s.undo)
+  const redo = useCircuitStore((s) => s.redo)
+  const canUndo = useCircuitStore((s) => s.past.length > 0)
+  const canRedo = useCircuitStore((s) => s.future.length > 0)
 
   return (
     <div className="comic-card pointer-events-auto absolute left-4 top-4 flex w-72 flex-col gap-3 p-4 text-sm text-black">
@@ -70,6 +74,24 @@ export function Toolbar() {
       </div>
 
       <div className="flex flex-wrap gap-2 border-t-2 border-black pt-3">
+        <button
+          type="button"
+          onClick={undo}
+          disabled={!canUndo}
+          title="Undo (Ctrl/Cmd+Z)"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Undo
+        </button>
+        <button
+          type="button"
+          onClick={redo}
+          disabled={!canRedo}
+          title="Redo (Ctrl/Cmd+Shift+Z)"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Redo
+        </button>
         <button type="button" onClick={clearCircuit} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Clear
         </button>
