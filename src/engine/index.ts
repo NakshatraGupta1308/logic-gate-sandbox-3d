@@ -1,0 +1,5 @@
+export { Circuit } from './Circuit'
+export type { AddWireResult, WireCheckResult, WireRejectionReason } from './Circuit'
+export { GATE_DEFS, getGateDef } from './Gate'
+export { simulate } from './simulate'
+export type { CircuitSnapshot, Gate, GateDef, GateKind, PinRef, Vec3, Wire } from './types'
