@@ -4,6 +4,12 @@ import type { CircuitSnapshot, Gate, GateKind, Vec3, Wire } from '../engine'
 
 const STORAGE_KEY = 'logic-gate-sandbox-3d:circuit'
 export const GATE_Y = 0.4
+const PASTE_OFFSET = 1
+
+interface ClipboardEntry {
+  kind: GateKind
+  position: Vec3
+}
 
 /** A pin as the scene layer sees it: which gate, which index, which side. */
 export interface PinHandle {
@@ -33,6 +39,10 @@ interface CircuitState {
   resetViewToken: number
   statusMessage: string | null
 
+  /** Gate kind + position last copied, if any; paste offsets from it. */
+  clipboard: ClipboardEntry | null
+  pasteCount: number
+
   setPlacingKind: (kind: GateKind | null) => void
   placeGate: (kind: GateKind, position: Vec3) => void
   removeGate: (id: string) => void
@@ -49,6 +59,9 @@ interface CircuitState {
 
   select: (selection: { gateId?: string | null; wireId?: string | null }) => void
   deleteSelected: () => void
+  copySelected: () => void
+  cutSelected: () => void
+  pasteClipboard: () => void
   clearCircuit: () => void
   resetView: () => void
   saveToStorage: () => void
@@ -91,6 +104,9 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
 
   resetViewToken: 0,
   statusMessage: null,
+
+  clipboard: null,
+  pasteCount: 0,
 
   setPlacingKind: (kind) => set({ placingKind: kind }),
 
@@ -161,6 +177,42 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     const { selectedGateId, selectedWireId, removeGate, removeWire } = get()
     if (selectedGateId) removeGate(selectedGateId)
     if (selectedWireId) removeWire(selectedWireId)
+  },
+
+  copySelected: () => {
+    const { selectedGateId, gates } = get()
+    const gate = gates.find((g) => g.id === selectedGateId)
+    if (!gate) return
+    set({ clipboard: { kind: gate.kind, position: gate.position }, pasteCount: 0 })
+  },
+
+  cutSelected: () => {
+    const { selectedGateId, selectedWireId, copySelected, removeGate, removeWire } = get()
+    if (selectedGateId) {
+      copySelected()
+      removeGate(selectedGateId)
+    } else if (selectedWireId) {
+      removeWire(selectedWireId)
+    }
+  },
+
+  pasteClipboard: () => {
+    const { clipboard, pasteCount, circuit } = get()
+    if (!clipboard) return
+    const nextCount = pasteCount + 1
+    const offset = PASTE_OFFSET * nextCount
+    const position: Vec3 = [
+      clipboard.position[0] + offset,
+      clipboard.position[1],
+      clipboard.position[2] + offset,
+    ]
+    const gate = circuit.addGate(clipboard.kind, position)
+    set({
+      ...refresh(circuit),
+      pasteCount: nextCount,
+      selectedGateId: gate.id,
+      selectedWireId: null,
+    })
   },
 
   clearCircuit: () => {
