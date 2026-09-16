@@ -1,0 +1,230 @@
+import { create } from 'zustand'
+import { Circuit, simulate } from '../engine'
+import type { CircuitSnapshot, Gate, GateKind, Vec3, Wire } from '../engine'
+
+const STORAGE_KEY = 'logic-gate-sandbox-3d:circuit'
+export const GATE_Y = 0.4
+
+/** A pin as the scene layer sees it: which gate, which index, which side. */
+export interface PinHandle {
+  gateId: string
+  pin: number
+  isOutput: boolean
+}
+
+interface CircuitState {
+  circuit: Circuit
+  gates: Gate[]
+  wires: Wire[]
+
+  /** Gate kind armed for placement; the next workbench click drops one. */
+  placingKind: GateKind | null
+  selectedGateId: string | null
+  selectedWireId: string | null
+
+  /** Output pin a wire drag started from, if any. */
+  pendingWireFrom: PinHandle | null
+  /** Live cursor point (on the workbench plane) while dragging a wire. */
+  dragPoint: Vec3 | null
+  hoveredPin: PinHandle | null
+  /** True while a gate or wire drag is in progress; disables orbit controls. */
+  isInteracting: boolean
+
+  resetViewToken: number
+  statusMessage: string | null
+
+  setPlacingKind: (kind: GateKind | null) => void
+  placeGate: (kind: GateKind, position: Vec3) => void
+  removeGate: (id: string) => void
+  moveGate: (id: string, position: Vec3) => void
+  toggleInput: (id: string) => void
+  setInteracting: (value: boolean) => void
+
+  beginWireDrag: (from: PinHandle) => void
+  updateDragPoint: (point: Vec3 | null) => void
+  setHoveredPin: (pin: PinHandle | null) => void
+  completeWireDrag: (to: PinHandle) => void
+  cancelWireDrag: () => void
+  removeWire: (id: string) => void
+
+  select: (selection: { gateId?: string | null; wireId?: string | null }) => void
+  deleteSelected: () => void
+  clearCircuit: () => void
+  resetView: () => void
+  saveToStorage: () => void
+  loadFromStorage: () => void
+}
+
+function refresh(circuit: Circuit) {
+  simulate(circuit)
+  return {
+    gates: circuit.getGates().map((g) => ({ ...g })),
+    wires: circuit.getWires().map((w) => ({ ...w })),
+  }
+}
+
+function loadDemoCircuit(circuit: Circuit) {
+  const a = circuit.addGate('INPUT', [-4.5, GATE_Y, -0.75])
+  const b = circuit.addGate('INPUT', [-4.5, GATE_Y, 0.75])
+  const and = circuit.addGate('AND', [-1.5, GATE_Y, 0])
+  const output = circuit.addGate('OUTPUT', [1.5, GATE_Y, 0])
+  circuit.addWire({ gateId: a.id, pin: 0 }, { gateId: and.id, pin: 0 })
+  circuit.addWire({ gateId: b.id, pin: 0 }, { gateId: and.id, pin: 1 })
+  circuit.addWire({ gateId: and.id, pin: 0 }, { gateId: output.id, pin: 0 })
+}
+
+const initialCircuit = new Circuit()
+loadDemoCircuit(initialCircuit)
+
+export const useCircuitStore = create<CircuitState>((set, get) => ({
+  circuit: initialCircuit,
+  ...refresh(initialCircuit),
+
+  placingKind: null,
+  selectedGateId: null,
+  selectedWireId: null,
+
+  pendingWireFrom: null,
+  dragPoint: null,
+  hoveredPin: null,
+  isInteracting: false,
+
+  resetViewToken: 0,
+  statusMessage: null,
+
+  setPlacingKind: (kind) => set({ placingKind: kind }),
+
+  placeGate: (kind, position) => {
+    const { circuit } = get()
+    circuit.addGate(kind, position)
+    set({ ...refresh(circuit), placingKind: null })
+  },
+
+  removeGate: (id) => {
+    const { circuit } = get()
+    circuit.removeGate(id)
+    set({
+      ...refresh(circuit),
+      selectedGateId: get().selectedGateId === id ? null : get().selectedGateId,
+    })
+  },
+
+  moveGate: (id, position) => {
+    const { circuit } = get()
+    circuit.moveGate(id, position)
+    set(refresh(circuit))
+  },
+
+  toggleInput: (id) => {
+    const { circuit } = get()
+    circuit.toggleInput(id)
+    set(refresh(circuit))
+  },
+
+  setInteracting: (value) => set({ isInteracting: value }),
+
+  beginWireDrag: (from) => set({ pendingWireFrom: from, dragPoint: null }),
+  updateDragPoint: (point) => set({ dragPoint: point }),
+  setHoveredPin: (pin) => set({ hoveredPin: pin }),
+
+  completeWireDrag: (to) => {
+    const { circuit, pendingWireFrom } = get()
+    if (!pendingWireFrom) return
+    const result = circuit.addWire(pendingWireFrom, to)
+    set({
+      ...refresh(circuit),
+      pendingWireFrom: null,
+      dragPoint: null,
+      hoveredPin: null,
+      statusMessage: result.ok ? null : describeRejection(result.reason),
+    })
+  },
+
+  cancelWireDrag: () => set({ pendingWireFrom: null, dragPoint: null, hoveredPin: null }),
+
+  removeWire: (id) => {
+    const { circuit } = get()
+    circuit.removeWire(id)
+    set({
+      ...refresh(circuit),
+      selectedWireId: get().selectedWireId === id ? null : get().selectedWireId,
+    })
+  },
+
+  select: (selection) =>
+    set({
+      selectedGateId: selection.gateId ?? null,
+      selectedWireId: selection.wireId ?? null,
+    }),
+
+  deleteSelected: () => {
+    const { selectedGateId, selectedWireId, removeGate, removeWire } = get()
+    if (selectedGateId) removeGate(selectedGateId)
+    if (selectedWireId) removeWire(selectedWireId)
+  },
+
+  clearCircuit: () => {
+    const { circuit } = get()
+    circuit.clear()
+    set({ ...refresh(circuit), selectedGateId: null, selectedWireId: null })
+  },
+
+  resetView: () => set((s) => ({ resetViewToken: s.resetViewToken + 1 })),
+
+  saveToStorage: () => {
+    const { circuit } = get()
+    const snapshot: CircuitSnapshot = circuit.toSnapshot()
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot))
+      set({ statusMessage: 'Circuit saved.' })
+    } catch {
+      set({ statusMessage: 'Could not save: storage unavailable.' })
+    }
+  },
+
+  loadFromStorage: () => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY)
+      if (!raw) {
+        set({ statusMessage: 'No saved circuit found.' })
+        return
+      }
+      const snapshot = JSON.parse(raw) as CircuitSnapshot
+      const circuit = new Circuit()
+      for (const gate of snapshot.gates) {
+        const restored = circuit.addGate(gate.kind, gate.position)
+        // Re-point the freshly generated id back to the saved wires below.
+        idRemap.set(gate.id, restored.id)
+      }
+      for (const wire of snapshot.wires) {
+        circuit.addWire(
+          { gateId: idRemap.get(wire.from.gateId) ?? wire.from.gateId, pin: wire.from.pin },
+          { gateId: idRemap.get(wire.to.gateId) ?? wire.to.gateId, pin: wire.to.pin },
+        )
+      }
+      idRemap.clear()
+      set({ circuit, ...refresh(circuit), statusMessage: 'Circuit loaded.' })
+    } catch {
+      set({ statusMessage: 'Could not load: saved data is corrupt.' })
+    }
+  },
+}))
+
+const idRemap = new Map<string, string>()
+
+function describeRejection(reason: string): string {
+  switch (reason) {
+    case 'source-not-output':
+      return 'Wires must start from an output pin.'
+    case 'target-not-input':
+      return 'Wires must end on an input pin.'
+    case 'same-gate':
+      return 'Cannot wire a gate to itself.'
+    case 'target-occupied':
+      return 'That input already has a wire. Remove it first.'
+    case 'would-cycle':
+      return 'That would create a feedback loop.'
+    default:
+      return 'That connection is not allowed.'
+  }
+}
