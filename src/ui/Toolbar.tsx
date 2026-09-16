@@ -1,6 +1,7 @@
 import type { GateKind } from '../engine'
 import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
+import { PRESETS, PRESET_ORDER } from '../state/presets'
 
 const PALETTE: { kind: GateKind; label: string }[] = [
   { kind: 'INPUT', label: 'Input' },
@@ -18,6 +19,7 @@ export function Toolbar() {
   const placingKind = useCircuitStore((s) => s.placingKind)
   const setPlacingKind = useCircuitStore((s) => s.setPlacingKind)
   const clearCircuit = useCircuitStore((s) => s.clearCircuit)
+  const loadPreset = useCircuitStore((s) => s.loadPreset)
   const saveToStorage = useCircuitStore((s) => s.saveToStorage)
   const loadFromStorage = useCircuitStore((s) => s.loadFromStorage)
   const resetView = useCircuitStore((s) => s.resetView)
@@ -46,6 +48,25 @@ export function Toolbar() {
             {label}
           </button>
         ))}
+      </div>
+
+      <div className="flex flex-col gap-1.5 border-t-2 border-black pt-3">
+        <span className="text-xs font-extrabold uppercase tracking-wide text-neutral-500">
+          Examples
+        </span>
+        <div className="flex flex-wrap gap-2">
+          {PRESET_ORDER.map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => loadPreset(name)}
+              title={PRESETS[name].description}
+              className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+            >
+              {PRESETS[name].label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 border-t-2 border-black pt-3">

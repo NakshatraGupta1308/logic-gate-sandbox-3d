@@ -1,9 +1,12 @@
 import { create } from 'zustand'
 import { Circuit, simulate } from '../engine'
 import type { CircuitSnapshot, Gate, GateKind, Vec3, Wire } from '../engine'
+import { GATE_Y } from './constants'
+import { PRESETS, type PresetName } from './presets'
+
+export { GATE_Y }
 
 const STORAGE_KEY = 'logic-gate-sandbox-3d:circuit'
-export const GATE_Y = 0.4
 const PASTE_OFFSET = 1
 
 interface ClipboardEntry {
@@ -63,17 +66,59 @@ interface CircuitState {
   cutSelected: () => void
   pasteClipboard: () => void
   clearCircuit: () => void
+  loadPreset: (name: PresetName) => void
   resetView: () => void
   saveToStorage: () => void
   loadFromStorage: () => void
 }
 
+// Circuit mutates its Gate objects in place, so identity alone can't tell
+// the scene layer what changed. These caches keep the last-seen wrapper for
+// each id and only mint a new one when its visible fields actually differ,
+// so React.memo'd GateMesh/WireCurve instances can skip re-rendering when
+// an unrelated part of the circuit changes.
+const gateCache = new Map<string, { key: string; snapshot: Gate }>()
+const wireCache = new Map<string, Wire>()
+
 function refresh(circuit: Circuit) {
   simulate(circuit)
-  return {
-    gates: circuit.getGates().map((g) => ({ ...g })),
-    wires: circuit.getWires().map((w) => ({ ...w })),
+
+  const liveGateIds = new Set<string>()
+  const gates = circuit.getGates().map((gate) => {
+    liveGateIds.add(gate.id)
+    const key = `${gate.position.join(',')}|${gate.inputValues.join(',')}|${gate.outputValues.join(',')}`
+    const cached = gateCache.get(gate.id)
+    if (cached && cached.key === key) return cached.snapshot
+    const snapshot: Gate = {
+      ...gate,
+      position: [...gate.position],
+      inputValues: [...gate.inputValues],
+      outputValues: [...gate.outputValues],
+    }
+    gateCache.set(gate.id, { key, snapshot })
+    return snapshot
+  })
+  for (const id of gateCache.keys()) {
+    if (!liveGateIds.has(id)) gateCache.delete(id)
   }
+
+  // Wires are immutable after creation (id/from/to never change), so once
+  // cached they can be reused for the wire's whole lifetime.
+  const liveWireIds = new Set<string>()
+  const wires = circuit.getWires().map((wire) => {
+    liveWireIds.add(wire.id)
+    let cached = wireCache.get(wire.id)
+    if (!cached) {
+      cached = { ...wire }
+      wireCache.set(wire.id, cached)
+    }
+    return cached
+  })
+  for (const id of wireCache.keys()) {
+    if (!liveWireIds.has(id)) wireCache.delete(id)
+  }
+
+  return { gates, wires }
 }
 
 function loadDemoCircuit(circuit: Circuit) {
@@ -219,6 +264,19 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     const { circuit } = get()
     circuit.clear()
     set({ ...refresh(circuit), selectedGateId: null, selectedWireId: null })
+  },
+
+  loadPreset: (name) => {
+    const { circuit } = get()
+    circuit.clear()
+    PRESETS[name].build(circuit)
+    set({
+      ...refresh(circuit),
+      selectedGateId: null,
+      selectedWireId: null,
+      placingKind: null,
+      statusMessage: `Loaded ${PRESETS[name].label}.`,
+    })
   },
 
   resetView: () => set((s) => ({ resetViewToken: s.resetViewToken + 1 })),
