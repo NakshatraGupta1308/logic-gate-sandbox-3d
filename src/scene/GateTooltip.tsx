@@ -2,16 +2,21 @@ import type { Gate } from '../engine'
 import { getGateDef } from '../engine'
 import { GATE_DESCRIPTION, GATE_SYMBOL, getTruthTable } from './gateVisuals'
 
-interface GateTooltipProps {
+interface GateInfoProps {
   gate: Gate
 }
 
-export function GateTooltip({ gate }: GateTooltipProps) {
+/**
+ * The symbol/name/description/truth-table/live-values content shared by the
+ * 3D hover tooltip (wrapped in a floating card below) and the 2D Inspector
+ * panel (which already provides its own card chrome).
+ */
+export function GateInfo({ gate }: GateInfoProps) {
   const def = getGateDef(gate.kind)
   const truthTable = getTruthTable(gate.kind)
 
   return (
-    <div className="w-56 select-none rounded-xl border-[3px] border-black bg-white p-3 text-black shadow-[4px_4px_0_#000]">
+    <div className="select-none">
       <div className="flex items-baseline gap-2">
         <span className="text-xl font-extrabold leading-none">{GATE_SYMBOL[gate.kind]}</span>
         <span className="text-sm font-extrabold">{def.label}</span>
@@ -59,6 +64,15 @@ export function GateTooltip({ gate }: GateTooltipProps) {
           </span>
         ))}
       </div>
+    </div>
+  )
+}
+
+/** Floating card version of GateInfo, used for the 3D hover tooltip. */
+export function GateTooltip({ gate }: GateInfoProps) {
+  return (
+    <div className="w-56 rounded-xl border-[3px] border-black bg-white p-3 text-black shadow-[4px_4px_0_#000]">
+      <GateInfo gate={gate} />
     </div>
   )
 }
