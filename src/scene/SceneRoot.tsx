@@ -4,7 +4,7 @@ import { ContactShadows, OrbitControls } from '@react-three/drei'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import * as THREE from 'three'
 import { useCircuitStore } from '../state/circuitStore'
-import { Workbench } from './Workbench'
+import { BOX_HALF_SIZE, Workbench } from './Workbench'
 import { GateMesh } from './GateMesh'
 import { WireCurve } from './WireCurve'
 import { buildWireCurve, pinPosition } from './layout'
@@ -81,7 +81,11 @@ function CameraRig() {
       enabled={!isInteracting}
       makeDefault
       minDistance={2}
-      maxDistance={20}
+      // Kept at most BOX_HALF_SIZE: a point within that radius of the
+      // origin can never have any single coordinate exceed it either, so
+      // this guarantees the camera can approach a wall but never end up
+      // outside the box looking back in.
+      maxDistance={BOX_HALF_SIZE}
       maxPolarAngle={Math.PI / 2 - 0.02}
     />
   )

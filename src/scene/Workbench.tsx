@@ -2,10 +2,15 @@ import type { ThreeEvent } from '@react-three/fiber'
 import { GATE_Y } from '../state/circuitStore'
 import { useCircuitStore } from '../state/circuitStore'
 import { snapToGrid } from './layout'
+import { GridLines, GridSurface } from './GridSurface'
 
-const HALF_SIZE = 12
-const MINOR_SPACING = 0.5
-const MAJOR_SPACING = 2
+// SceneRoot's CameraRig uses this as OrbitControls' maxDistance too: a point
+// within that radius of the origin can never have any single coordinate
+// exceed it either, so clamping the camera to at most BOX_HALF_SIZE away
+// guarantees it can get arbitrarily close to a wall but never end up
+// outside the box looking back in.
+export const BOX_HALF_SIZE = 10
+const WALL_HEIGHT = 7
 
 export function Workbench() {
   const placingKind = useCircuitStore((s) => s.placingKind)
@@ -37,9 +42,12 @@ export function Workbench() {
     setInteracting(false)
   }
 
+  const size = BOX_HALF_SIZE * 2
+
   return (
     <group>
-      {/* Flat, unshaded plane so the workbench reads like a sheet of paper. */}
+      {/* Floor: flat, unshaded, and the only surface that handles gate
+          placement and wire-drag clicks. */}
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         position={[0, 0, 0]}
@@ -47,18 +55,41 @@ export function Workbench() {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
       >
-        <planeGeometry args={[HALF_SIZE * 2, HALF_SIZE * 2]} />
+        <planeGeometry args={[size, size]} />
         <meshBasicMaterial color="#ffffff" />
       </mesh>
+      <group rotation={[-Math.PI / 2, 0, 0]}>
+        <GridLines width={size} height={size} />
+      </group>
 
-      {/* Graph-paper grid: fine minor lines under bold major lines. */}
-      <gridHelper
-        position={[0, 0.001, 0]}
-        args={[HALF_SIZE * 2, (HALF_SIZE * 2) / MINOR_SPACING, '#d7dce3', '#d7dce3']}
+      {/* Four walls enclosing the workbench so the scene reads as a room
+          rather than a floor floating in an infinite white void. Each
+          panel's local +Z, after its rotation below, points back toward
+          the box's interior. No ceiling: it would block the top-down
+          orbit view for no visual benefit, since the sky and the walls
+          are already the same white. */}
+      <GridSurface
+        width={size}
+        height={WALL_HEIGHT}
+        position={[0, WALL_HEIGHT / 2, -BOX_HALF_SIZE]}
       />
-      <gridHelper
-        position={[0, 0.002, 0]}
-        args={[HALF_SIZE * 2, (HALF_SIZE * 2) / MAJOR_SPACING, '#9aa3b0', '#9aa3b0']}
+      <GridSurface
+        width={size}
+        height={WALL_HEIGHT}
+        position={[0, WALL_HEIGHT / 2, BOX_HALF_SIZE]}
+        rotation={[0, Math.PI, 0]}
+      />
+      <GridSurface
+        width={size}
+        height={WALL_HEIGHT}
+        position={[BOX_HALF_SIZE, WALL_HEIGHT / 2, 0]}
+        rotation={[0, -Math.PI / 2, 0]}
+      />
+      <GridSurface
+        width={size}
+        height={WALL_HEIGHT}
+        position={[-BOX_HALF_SIZE, WALL_HEIGHT / 2, 0]}
+        rotation={[0, Math.PI / 2, 0]}
       />
     </group>
   )
