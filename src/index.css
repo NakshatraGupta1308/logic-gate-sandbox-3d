@@ -5,12 +5,46 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: #0b0d12;
-  color: #e5e7eb;
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  background: #ffffff;
+  color: #111111;
+  font-family: 'Baloo 2', system-ui, 'Segoe UI', Roboto, sans-serif;
   overscroll-behavior: none;
 }
 
 canvas {
   touch-action: none;
+}
+
+/* Comic-book UI: solid black borders, a hard drop shadow that tucks away on
+   press, so buttons and cards feel like tactile, inked panels. */
+.comic-card {
+  border: 3px solid #000;
+  border-radius: 0.9rem;
+  background: #ffffff;
+  box-shadow: 4px 4px 0 #000;
+}
+
+.comic-btn {
+  border: 2.5px solid #000;
+  border-radius: 0.6rem;
+  background: #ffffff;
+  box-shadow: 3px 3px 0 #000;
+  transition:
+    transform 0.06s ease-out,
+    box-shadow 0.06s ease-out;
+}
+
+.comic-btn:hover {
+  background: #fef9c3;
+}
+
+.comic-btn:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 #000;
+}
+
+.comic-btn-active {
+  background: #fde68a;
+  transform: translate(1.5px, 1.5px);
+  box-shadow: 1.5px 1.5px 0 #000;
 }

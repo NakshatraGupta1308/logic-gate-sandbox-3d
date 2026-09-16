@@ -24,7 +24,7 @@ function App() {
   }, [deleteSelected, cancelWireDrag])
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#0b0d12]">
+    <div className="relative h-screen w-screen overflow-hidden bg-white">
       <SceneRoot />
       <div className="pointer-events-none absolute inset-0">
         <Toolbar />

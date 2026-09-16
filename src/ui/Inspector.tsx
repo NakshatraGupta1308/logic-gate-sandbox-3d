@@ -1,4 +1,5 @@
 import { getGateDef } from '../engine'
+import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
 
 export function Inspector() {
@@ -15,20 +16,23 @@ export function Inspector() {
   if (!selectedGate && !selectedWire && !statusMessage) return null
 
   return (
-    <div className="pointer-events-auto absolute bottom-4 right-4 w-64 rounded-xl border border-white/10 bg-black/60 p-4 text-sm text-slate-100 backdrop-blur">
+    <div className="comic-card pointer-events-auto absolute bottom-4 right-4 w-64 p-4 text-sm text-black">
       {selectedGate && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-semibold">{getGateDef(selectedGate.kind).label} gate</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="flex items-center gap-2 text-sm font-extrabold">
+            <span className="text-lg leading-none">{GATE_SYMBOL[selectedGate.kind]}</span>
+            {getGateDef(selectedGate.kind).label} gate
+          </h2>
+          <p className="text-xs font-medium text-neutral-600">
             Position: {selectedGate.position.map((n) => n.toFixed(1)).join(', ')}
           </p>
-          <p className="text-xs text-slate-400">
+          <p className="text-xs font-medium text-neutral-600">
             Output: {selectedGate.outputValues.map((v) => (v ? '1' : '0')).join(', ') || 'n/a'}
           </p>
           <button
             type="button"
             onClick={deleteSelected}
-            className="mt-1 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/20"
+            className="comic-btn mt-1 px-2.5 py-1.5 text-xs font-bold text-red-600"
           >
             Delete gate
           </button>
@@ -37,12 +41,14 @@ export function Inspector() {
 
       {selectedWire && !selectedGate && (
         <div className="flex flex-col gap-2">
-          <h2 className="text-sm font-semibold">Wire</h2>
-          <p className="text-xs text-slate-400">Double-click a wire to delete it instantly.</p>
+          <h2 className="text-sm font-extrabold">Wire</h2>
+          <p className="text-xs font-medium text-neutral-600">
+            Double-click a wire to delete it instantly.
+          </p>
           <button
             type="button"
             onClick={deleteSelected}
-            className="mt-1 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/20"
+            className="comic-btn mt-1 px-2.5 py-1.5 text-xs font-bold text-red-600"
           >
             Delete wire
           </button>
@@ -50,7 +56,7 @@ export function Inspector() {
       )}
 
       {statusMessage && !selectedGate && !selectedWire && (
-        <p className="text-xs text-amber-300">{statusMessage}</p>
+        <p className="text-xs font-bold text-amber-600">{statusMessage}</p>
       )}
     </div>
   )
