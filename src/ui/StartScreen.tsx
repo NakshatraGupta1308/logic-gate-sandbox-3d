@@ -10,6 +10,8 @@ interface ShortcutRow {
 }
 
 const SHORTCUTS: ShortcutRow[] = [
+  { action: 'Undo', windows: 'Ctrl + Z', mac: '⌘ + Z' },
+  { action: 'Redo', windows: 'Ctrl + Shift + Z or Ctrl + Y', mac: '⌘ + Shift + Z' },
   { action: 'Copy selected gate', windows: 'Ctrl + C', mac: '⌘ + C' },
   { action: 'Cut selected gate/wire', windows: 'Ctrl + X', mac: '⌘ + X' },
   { action: 'Paste gate', windows: 'Ctrl + V', mac: '⌘ + V' },

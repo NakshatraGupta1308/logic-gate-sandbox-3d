@@ -43,6 +43,11 @@ canvas {
   box-shadow: 0 0 0 #000;
 }
 
+.comic-btn:disabled {
+  pointer-events: none;
+  opacity: 0.4;
+}
+
 .comic-btn-active {
   background: #fde68a;
   transform: translate(1.5px, 1.5px);

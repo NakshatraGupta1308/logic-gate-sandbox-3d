@@ -5,6 +5,7 @@ import type { CircuitSnapshot, Gate, GateKind, Vec3, Wire } from '../engine'
 const STORAGE_KEY = 'logic-gate-sandbox-3d:circuit'
 export const GATE_Y = 0.4
 const PASTE_OFFSET = 1
+const MAX_HISTORY = 50
 
 interface ClipboardEntry {
   kind: GateKind
@@ -43,6 +44,10 @@ interface CircuitState {
   clipboard: ClipboardEntry | null
   pasteCount: number
 
+  /** Undo/redo stacks of deep-cloned circuit snapshots. */
+  past: CircuitSnapshot[]
+  future: CircuitSnapshot[]
+
   setPlacingKind: (kind: GateKind | null) => void
   placeGate: (kind: GateKind, position: Vec3) => void
   removeGate: (id: string) => void
@@ -66,6 +71,11 @@ interface CircuitState {
   resetView: () => void
   saveToStorage: () => void
   loadFromStorage: () => void
+
+  /** Records the current circuit as an undo point. Call before a mutation. */
+  pushHistory: () => void
+  undo: () => void
+  redo: () => void
 }
 
 function refresh(circuit: Circuit) {
@@ -74,6 +84,44 @@ function refresh(circuit: Circuit) {
     gates: circuit.getGates().map((g) => ({ ...g })),
     wires: circuit.getWires().map((w) => ({ ...w })),
   }
+}
+
+/** Deep-clones the circuit's current gates/wires for the undo/redo stacks. */
+function cloneSnapshot(circuit: Circuit): CircuitSnapshot {
+  return {
+    gates: circuit.getGates().map((g) => ({
+      ...g,
+      position: [...g.position],
+      inputValues: [...g.inputValues],
+      outputValues: [...g.outputValues],
+    })),
+    wires: circuit.getWires().map((w) => ({ ...w, from: { ...w.from }, to: { ...w.to } })),
+  }
+}
+
+/**
+ * Rebuilds a fresh Circuit from a snapshot, used by both loadFromStorage and
+ * undo/redo. Restores each gate's actual input/output values (not just its
+ * kind and position) since Circuit.addGate always starts a gate at all-false
+ * and simulate() never recomputes an INPUT gate's value from its wiring, it
+ * is the one value a plain rebuild-and-resimulate can't recover on its own.
+ */
+function restoreCircuitFromSnapshot(snapshot: CircuitSnapshot): Circuit {
+  const circuit = new Circuit()
+  const idMap = new Map<string, string>()
+  for (const gate of snapshot.gates) {
+    const restored = circuit.addGate(gate.kind, gate.position)
+    idMap.set(gate.id, restored.id)
+    restored.inputValues = [...gate.inputValues]
+    restored.outputValues = [...gate.outputValues]
+  }
+  for (const wire of snapshot.wires) {
+    circuit.addWire(
+      { gateId: idMap.get(wire.from.gateId) ?? wire.from.gateId, pin: wire.from.pin },
+      { gateId: idMap.get(wire.to.gateId) ?? wire.to.gateId, pin: wire.to.pin },
+    )
+  }
+  return circuit
 }
 
 function loadDemoCircuit(circuit: Circuit) {
@@ -108,16 +156,21 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   clipboard: null,
   pasteCount: 0,
 
+  past: [],
+  future: [],
+
   setPlacingKind: (kind) => set({ placingKind: kind }),
 
   placeGate: (kind, position) => {
-    const { circuit } = get()
+    const { circuit, pushHistory } = get()
+    pushHistory()
     circuit.addGate(kind, position)
     set({ ...refresh(circuit), placingKind: null })
   },
 
   removeGate: (id) => {
-    const { circuit } = get()
+    const { circuit, pushHistory } = get()
+    pushHistory()
     circuit.removeGate(id)
     set({
       ...refresh(circuit),
@@ -125,6 +178,9 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     })
   },
 
+  // Not wrapped in pushHistory: called continuously while dragging a gate.
+  // The scene records one history entry at the start of a drag instead (see
+  // GateMesh's handleBodyPointerMove), so a whole drag is a single undo step.
   moveGate: (id, position) => {
     const { circuit } = get()
     circuit.moveGate(id, position)
@@ -132,7 +188,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   },
 
   toggleInput: (id) => {
-    const { circuit } = get()
+    const { circuit, pushHistory } = get()
+    pushHistory()
     circuit.toggleInput(id)
     set(refresh(circuit))
   },
@@ -144,8 +201,10 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   setHoveredPin: (pin) => set({ hoveredPin: pin }),
 
   completeWireDrag: (to) => {
-    const { circuit, pendingWireFrom } = get()
+    const { circuit, pendingWireFrom, pushHistory } = get()
     if (!pendingWireFrom) return
+    const check = circuit.canAddWire(pendingWireFrom, to)
+    if (check.ok) pushHistory()
     const result = circuit.addWire(pendingWireFrom, to)
     set({
       ...refresh(circuit),
@@ -159,7 +218,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   cancelWireDrag: () => set({ pendingWireFrom: null, dragPoint: null, hoveredPin: null }),
 
   removeWire: (id) => {
-    const { circuit } = get()
+    const { circuit, pushHistory } = get()
+    pushHistory()
     circuit.removeWire(id)
     set({
       ...refresh(circuit),
@@ -197,8 +257,9 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   },
 
   pasteClipboard: () => {
-    const { clipboard, pasteCount, circuit } = get()
+    const { clipboard, pasteCount, circuit, pushHistory } = get()
     if (!clipboard) return
+    pushHistory()
     const nextCount = pasteCount + 1
     const offset = PASTE_OFFSET * nextCount
     const position: Vec3 = [
@@ -216,7 +277,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   },
 
   clearCircuit: () => {
-    const { circuit } = get()
+    const { circuit, pushHistory } = get()
+    pushHistory()
     circuit.clear()
     set({ ...refresh(circuit), selectedGateId: null, selectedWireId: null })
   },
@@ -242,27 +304,57 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
         return
       }
       const snapshot = JSON.parse(raw) as CircuitSnapshot
-      const circuit = new Circuit()
-      for (const gate of snapshot.gates) {
-        const restored = circuit.addGate(gate.kind, gate.position)
-        // Re-point the freshly generated id back to the saved wires below.
-        idRemap.set(gate.id, restored.id)
-      }
-      for (const wire of snapshot.wires) {
-        circuit.addWire(
-          { gateId: idRemap.get(wire.from.gateId) ?? wire.from.gateId, pin: wire.from.pin },
-          { gateId: idRemap.get(wire.to.gateId) ?? wire.to.gateId, pin: wire.to.pin },
-        )
-      }
-      idRemap.clear()
-      set({ circuit, ...refresh(circuit), statusMessage: 'Circuit loaded.' })
+      get().pushHistory()
+      const circuit = restoreCircuitFromSnapshot(snapshot)
+      set({
+        circuit,
+        ...refresh(circuit),
+        selectedGateId: null,
+        selectedWireId: null,
+        statusMessage: 'Circuit loaded.',
+      })
     } catch {
       set({ statusMessage: 'Could not load: saved data is corrupt.' })
     }
   },
-}))
 
-const idRemap = new Map<string, string>()
+  pushHistory: () => {
+    const { circuit, past } = get()
+    set({ past: [...past, cloneSnapshot(circuit)].slice(-MAX_HISTORY), future: [] })
+  },
+
+  undo: () => {
+    const { past, future, circuit } = get()
+    const previous = past[past.length - 1]
+    if (!previous) return
+    const current = cloneSnapshot(circuit)
+    const restored = restoreCircuitFromSnapshot(previous)
+    set({
+      circuit: restored,
+      ...refresh(restored),
+      past: past.slice(0, -1),
+      future: [...future, current].slice(-MAX_HISTORY),
+      selectedGateId: null,
+      selectedWireId: null,
+    })
+  },
+
+  redo: () => {
+    const { past, future, circuit } = get()
+    const next = future[future.length - 1]
+    if (!next) return
+    const current = cloneSnapshot(circuit)
+    const restored = restoreCircuitFromSnapshot(next)
+    set({
+      circuit: restored,
+      ...refresh(restored),
+      past: [...past, current].slice(-MAX_HISTORY),
+      future: future.slice(0, -1),
+      selectedGateId: null,
+      selectedWireId: null,
+    })
+  },
+}))
 
 function describeRejection(reason: string): string {
   switch (reason) {

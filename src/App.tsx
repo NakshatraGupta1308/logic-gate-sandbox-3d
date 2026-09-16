@@ -13,6 +13,8 @@ function App() {
   const copySelected = useCircuitStore((s) => s.copySelected)
   const cutSelected = useCircuitStore((s) => s.cutSelected)
   const pasteClipboard = useCircuitStore((s) => s.pasteClipboard)
+  const undo = useCircuitStore((s) => s.undo)
+  const redo = useCircuitStore((s) => s.redo)
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -37,6 +39,23 @@ function App() {
         pasteClipboard()
         return
       }
+      // Redo: Ctrl/Cmd+Shift+Z (standard everywhere) or Ctrl+Y (common on
+      // Windows). Checked before plain undo since Shift+Z also matches "z".
+      if (withModifier && e.shiftKey && key === 'z') {
+        e.preventDefault()
+        redo()
+        return
+      }
+      if (e.ctrlKey && key === 'y') {
+        e.preventDefault()
+        redo()
+        return
+      }
+      if (withModifier && key === 'z') {
+        e.preventDefault()
+        undo()
+        return
+      }
       if (e.key === 'Delete' || e.key === 'Backspace') {
         deleteSelected()
         return
@@ -47,7 +66,7 @@ function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [deleteSelected, cancelWireDrag, copySelected, cutSelected, pasteClipboard])
+  }, [deleteSelected, cancelWireDrag, copySelected, cutSelected, pasteClipboard, undo, redo])
 
   if (!started) {
     return <StartScreen onStart={() => setStarted(true)} />
