@@ -1,4 +1,5 @@
 import type { GateKind } from '../engine'
+import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
 
 const PALETTE: { kind: GateKind; label: string }[] = [
@@ -22,10 +23,10 @@ export function Toolbar() {
   const resetView = useCircuitStore((s) => s.resetView)
 
   return (
-    <div className="pointer-events-auto absolute left-4 top-4 flex w-72 flex-col gap-3 rounded-xl border border-white/10 bg-black/60 p-4 text-sm text-slate-100 backdrop-blur">
+    <div className="comic-card pointer-events-auto absolute left-4 top-4 flex w-72 flex-col gap-3 p-4 text-sm text-black">
       <div>
-        <h1 className="text-base font-semibold">Logic Gate Sandbox 3D</h1>
-        <p className="mt-1 text-xs text-slate-400">
+        <h1 className="text-lg font-extrabold tracking-tight">Logic Gate Sandbox 3D</h1>
+        <p className="mt-1 text-xs font-medium text-neutral-600">
           Pick a gate, click the workbench to place it. Drag from an output pin (right side) to
           an input pin (left side) to wire them. Click an INPUT gate to toggle it.
         </p>
@@ -37,44 +38,27 @@ export function Toolbar() {
             key={kind}
             type="button"
             onClick={() => setPlacingKind(placingKind === kind ? null : kind)}
-            className={`rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
-              placingKind === kind
-                ? 'border-amber-400 bg-amber-400/20 text-amber-200'
-                : 'border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'
+            className={`comic-btn flex flex-col items-center gap-0.5 px-2 py-1.5 text-xs font-bold ${
+              placingKind === kind ? 'comic-btn-active' : ''
             }`}
           >
+            <span className="text-base leading-none">{GATE_SYMBOL[kind]}</span>
             {label}
           </button>
         ))}
       </div>
 
-      <div className="flex flex-wrap gap-2 border-t border-white/10 pt-3">
-        <button
-          type="button"
-          onClick={clearCircuit}
-          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10"
-        >
+      <div className="flex flex-wrap gap-2 border-t-2 border-black pt-3">
+        <button type="button" onClick={clearCircuit} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Clear
         </button>
-        <button
-          type="button"
-          onClick={saveToStorage}
-          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10"
-        >
+        <button type="button" onClick={saveToStorage} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Save
         </button>
-        <button
-          type="button"
-          onClick={loadFromStorage}
-          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10"
-        >
+        <button type="button" onClick={loadFromStorage} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Load
         </button>
-        <button
-          type="button"
-          onClick={resetView}
-          className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10"
-        >
+        <button type="button" onClick={resetView} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Reset View
         </button>
       </div>

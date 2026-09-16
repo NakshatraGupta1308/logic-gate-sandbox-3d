@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Canvas } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
+import { ContactShadows, OrbitControls } from '@react-three/drei'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import * as THREE from 'three'
 import { useCircuitStore } from '../state/circuitStore'
@@ -83,20 +83,25 @@ export function SceneRoot() {
   const gateById = new Map(gates.map((g) => [g.id, g]))
 
   return (
-    <Canvas shadows camera={{ position: [6, 5, 8], fov: 50 }}>
-      <color attach="background" args={['#0b0d12']} />
-      <fog attach="fog" args={['#0b0d12', 12, 26]} />
-      <ambientLight intensity={0.5} />
-      <directionalLight
-        position={[6, 8, 4]}
-        intensity={1.1}
-        castShadow
-        shadow-mapSize={[1024, 1024]}
-      />
-      <pointLight position={[-6, 4, -4]} intensity={0.3} color="#60a5fa" />
+    <Canvas camera={{ position: [6, 5, 8], fov: 50 }}>
+      <color attach="background" args={['#ffffff']} />
+      {/* Flat ambient-forward lighting keeps toon shading bands crisp
+          instead of washing them out with soft light. */}
+      <ambientLight intensity={0.85} />
+      <directionalLight position={[6, 8, 4]} intensity={0.9} />
+      <directionalLight position={[-4, 5, -6]} intensity={0.3} />
 
       <CameraRig />
       <Workbench />
+      <ContactShadows
+        position={[0, 0.003, 0]}
+        opacity={0.35}
+        scale={20}
+        blur={2.2}
+        far={3}
+        resolution={512}
+        color="#1f2430"
+      />
 
       {gates.map((gate) => (
         <GateMesh key={gate.id} gate={gate} />

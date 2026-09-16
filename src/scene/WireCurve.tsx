@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
-import { Line } from '@react-three/drei'
 import * as THREE from 'three'
 import type { Gate, Wire } from '../engine'
 import { buildWireCurve, pinPosition } from './layout'
@@ -8,6 +7,8 @@ import { useCircuitStore } from '../state/circuitStore'
 
 const SAMPLE_COUNT = 24
 const PULSE_SPEED = 0.6
+const OUTLINE_RADIUS = 0.055
+const CORE_RADIUS = 0.032
 
 interface WireCurveProps {
   wire: Wire
@@ -29,22 +30,33 @@ export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
     return buildWireCurve(from, to)
   }, [fromGate, toGate, wire.from.pin, wire.to.pin])
 
-  const points = useMemo(() => curve.getPoints(SAMPLE_COUNT), [curve])
+  const outlineGeometry = useMemo(
+    () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, OUTLINE_RADIUS, 8, false),
+    [curve],
+  )
+  const coreGeometry = useMemo(
+    () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, CORE_RADIUS, 8, false),
+    [curve],
+  )
+  // A separate invisible tube (full outline radius) is the actual click
+  // target: the visible outline mesh uses BackSide so the colored core
+  // shows through, which would otherwise shrink the clickable area down
+  // to the thin rim.
   const hitGeometry = useMemo(
-    () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, 0.09, 6, false),
+    () => new THREE.TubeGeometry(curve, SAMPLE_COUNT, OUTLINE_RADIUS, 8, false),
     [curve],
   )
 
-  const pulseRef = useRef<THREE.Mesh>(null)
+  const pulseGroupRef = useRef<THREE.Group>(null)
   const tRef = useRef(0)
 
   useFrame((_, delta) => {
-    if (!active || !pulseRef.current) return
+    if (!active || !pulseGroupRef.current) return
     tRef.current = (tRef.current + delta * PULSE_SPEED) % 1
-    curve.getPoint(tRef.current, pulseRef.current.position)
+    curve.getPoint(tRef.current, pulseGroupRef.current.position)
   })
 
-  const color = isSelected ? '#facc15' : active ? '#22c55e' : '#8b93a3'
+  const coreColor = isSelected ? '#facc15' : active ? '#22c55e' : '#c7cbd1'
 
   return (
     <group
@@ -57,15 +69,29 @@ export function WireCurve({ wire, fromGate, toGate }: WireCurveProps) {
         removeWire(wire.id)
       }}
     >
-      <Line points={points} color={color} lineWidth={active ? 3 : 2} />
       <mesh geometry={hitGeometry}>
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
+      {/* Same inverted-hull trick as the gate outlines: a larger BackSide
+          black tube shows only where it pokes out past the colored core,
+          reading as an inked border instead of hiding the core entirely. */}
+      <mesh geometry={outlineGeometry} raycast={() => null}>
+        <meshBasicMaterial color="#161616" side={THREE.BackSide} />
+      </mesh>
+      <mesh geometry={coreGeometry} raycast={() => null}>
+        <meshBasicMaterial color={coreColor} />
+      </mesh>
       {active && (
-        <mesh ref={pulseRef}>
-          <sphereGeometry args={[0.06, 12, 12]} />
-          <meshStandardMaterial color="#bbf7d0" emissive="#4ade80" emissiveIntensity={2} />
-        </mesh>
+        <group ref={pulseGroupRef}>
+          <mesh raycast={() => null} scale={1.5}>
+            <sphereGeometry args={[0.06, 12, 12]} />
+            <meshBasicMaterial color="#161616" side={THREE.BackSide} />
+          </mesh>
+          <mesh raycast={() => null}>
+            <sphereGeometry args={[0.06, 12, 12]} />
+            <meshBasicMaterial color="#bbf7d0" />
+          </mesh>
+        </group>
       )}
     </group>
   )

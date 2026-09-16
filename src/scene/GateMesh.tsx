@@ -1,22 +1,17 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ThreeEvent } from '@react-three/fiber'
-import { Html } from '@react-three/drei'
+import { Html, RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
-import { getGateDef, type Gate, type GateKind } from '../engine'
+import { getGateDef, type Gate } from '../engine'
 import { GATE_DEPTH, GATE_HEIGHT, GATE_WIDTH, PIN_RADIUS, pinPosition, snapToGrid } from './layout'
+import { GATE_BODY_COLOR, GATE_SYMBOL } from './gateVisuals'
+import { GateTooltip } from './GateTooltip'
+import { usePopScale } from './usePopScale'
 import { useCircuitStore } from '../state/circuitStore'
 
-const GATE_COLORS: Partial<Record<GateKind, string>> = {
-  AND: '#2563eb',
-  OR: '#7c3aed',
-  NOT: '#db2777',
-  XOR: '#0891b2',
-  NAND: '#65a30d',
-  NOR: '#ea580c',
-  XNOR: '#4f46e5',
-}
-
-const OFF_COLOR = '#374151'
+const OUTLINE_COLOR = '#161616'
+const OUTLINE_SCALE = 1.09
+const CORNER_RADIUS = 0.1
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
 const DRAG_THRESHOLD = 0.05
 
@@ -27,6 +22,7 @@ interface GateMeshProps {
 export function GateMesh({ gate }: GateMeshProps) {
   const def = getGateDef(gate.kind)
   const selectedGateId = useCircuitStore((s) => s.selectedGateId)
+  const isInteracting = useCircuitStore((s) => s.isInteracting)
   const pendingWireFrom = useCircuitStore((s) => s.pendingWireFrom)
   const hoveredPin = useCircuitStore((s) => s.hoveredPin)
   const circuit = useCircuitStore((s) => s.circuit)
@@ -42,19 +38,22 @@ export function GateMesh({ gate }: GateMeshProps) {
   const isDragging = useRef(false)
   const dragMoved = useRef(false)
   const downPoint = useRef(new THREE.Vector3())
+  const [isHoveredBody, setIsHoveredBody] = useState(false)
+
+  const { groupRef: popRef, pop } = usePopScale()
+  const currentValue = gate.kind === 'OUTPUT' ? (gate.inputValues[0] ?? false) : (gate.outputValues[0] ?? false)
+  const previousValue = useRef(currentValue)
+  useEffect(() => {
+    if (previousValue.current !== currentValue) {
+      previousValue.current = currentValue
+      pop()
+    }
+  }, [currentValue, pop])
 
   const isOn = gate.kind === 'INPUT' ? gate.outputValues[0] : (gate.inputValues[0] ?? false)
-
-  const bodyColor =
-    gate.kind === 'INPUT'
-      ? isOn
-        ? '#22c55e'
-        : OFF_COLOR
-      : gate.kind === 'OUTPUT'
-        ? isOn
-          ? '#f59e0b'
-          : OFF_COLOR
-        : (GATE_COLORS[gate.kind] ?? OFF_COLOR)
+  const bodyColor = GATE_BODY_COLOR[gate.kind]
+  const outlineColor =
+    gate.kind === 'OUTPUT' ? (isOn ? '#22c55e' : OUTLINE_COLOR) : OUTLINE_COLOR
 
   function handleBodyPointerDown(e: ThreeEvent<PointerEvent>) {
     e.stopPropagation()
@@ -93,31 +92,66 @@ export function GateMesh({ gate }: GateMeshProps) {
     if (gate.kind === 'INPUT') toggleInput(gate.id)
   }
 
+  function handleBodyPointerOver(e: ThreeEvent<PointerEvent>) {
+    e.stopPropagation()
+    setIsHoveredBody(true)
+  }
+
+  function handleBodyPointerOut(e: ThreeEvent<PointerEvent>) {
+    e.stopPropagation()
+    setIsHoveredBody(false)
+  }
+
   return (
     <group position={gate.position}>
-      <mesh
-        onPointerDown={handleBodyPointerDown}
-        onPointerMove={handleBodyPointerMove}
-        onPointerUp={handleBodyPointerUp}
-        onClick={handleBodyClick}
-        castShadow
-        receiveShadow
-      >
-        <boxGeometry args={[GATE_WIDTH, GATE_HEIGHT, GATE_DEPTH]} />
-        <meshStandardMaterial
-          color={bodyColor}
-          emissive={isSelected ? '#facc15' : '#000000'}
-          emissiveIntensity={isSelected ? 0.5 : 0}
-          roughness={0.4}
-          metalness={0.15}
-        />
-      </mesh>
+      <group ref={popRef}>
+        {/* Inverted-hull outline: a larger black backface-only copy behind
+            the body, the standard toon-outline trick without postprocessing. */}
+        <RoundedBox
+          args={[GATE_WIDTH, GATE_HEIGHT, GATE_DEPTH]}
+          radius={CORNER_RADIUS}
+          smoothness={4}
+          scale={OUTLINE_SCALE}
+          raycast={() => null}
+        >
+          <meshBasicMaterial color={outlineColor} side={THREE.BackSide} />
+        </RoundedBox>
 
-      <Html position={[0, GATE_HEIGHT / 2 + 0.3, 0]} center distanceFactor={8} occlude>
-        <div className="select-none whitespace-nowrap rounded bg-black/50 px-1.5 py-0.5 text-xs font-medium text-white">
-          {gate.kind === 'INPUT' ? (isOn ? 'IN: 1' : 'IN: 0') : def.label}
+        <RoundedBox
+          args={[GATE_WIDTH, GATE_HEIGHT, GATE_DEPTH]}
+          radius={CORNER_RADIUS}
+          smoothness={4}
+          onPointerDown={handleBodyPointerDown}
+          onPointerMove={handleBodyPointerMove}
+          onPointerUp={handleBodyPointerUp}
+          onClick={handleBodyClick}
+          onPointerOver={handleBodyPointerOver}
+          onPointerOut={handleBodyPointerOut}
+        >
+          <meshToonMaterial
+            color={bodyColor}
+            emissive={isSelected ? '#facc15' : gate.kind === 'INPUT' && isOn ? '#fde68a' : '#000000'}
+            emissiveIntensity={isSelected ? 0.6 : gate.kind === 'INPUT' && isOn ? 0.7 : 0}
+          />
+        </RoundedBox>
+      </group>
+
+      <Html position={[0, GATE_HEIGHT / 2 + 0.34, 0]} center distanceFactor={8} occlude>
+        <div className="pointer-events-none flex select-none flex-col items-center">
+          <div className="rounded-md border-2 border-black bg-white px-1.5 py-0.5 text-center leading-none shadow-[2px_2px_0_#000]">
+            <span className="text-base font-extrabold">{GATE_SYMBOL[gate.kind]}</span>
+          </div>
+          <div className="mt-0.5 whitespace-nowrap rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-bold text-white">
+            {gate.kind === 'INPUT' ? (isOn ? 'IN: 1' : 'IN: 0') : def.label}
+          </div>
         </div>
       </Html>
+
+      {isHoveredBody && !pendingWireFrom && !isInteracting && (
+        <Html position={[0, -GATE_HEIGHT / 2 - 0.2, 0]} center distanceFactor={8} occlude>
+          <GateTooltip gate={gate} />
+        </Html>
+      )}
 
       {Array.from({ length: def.numInputs }, (_, pin) => {
         const world = pinPosition(gate, false, pin)
@@ -159,7 +193,7 @@ export function GateMesh({ gate }: GateMeshProps) {
             }}
           >
             <sphereGeometry args={[isHovered ? PIN_RADIUS * 1.5 : PIN_RADIUS, 12, 12]} />
-            <meshStandardMaterial
+            <meshToonMaterial
               color={color}
               emissive={color}
               emissiveIntensity={value || isHovered ? 0.8 : 0.1}
@@ -188,7 +222,7 @@ export function GateMesh({ gate }: GateMeshProps) {
             }}
           >
             <sphereGeometry args={[PIN_RADIUS, 12, 12]} />
-            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={value ? 0.8 : 0.1} />
+            <meshToonMaterial color={color} emissive={color} emissiveIntensity={value ? 0.8 : 0.1} />
           </mesh>
         )
       })}
