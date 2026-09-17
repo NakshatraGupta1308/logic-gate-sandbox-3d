@@ -189,6 +189,15 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
               r={PIN_HIT_RADIUS}
               fill="transparent"
               style={{ cursor: 'crosshair' }}
+              onPointerDown={(e) => {
+                // Without this, a plain click here (no wire being dragged)
+                // bubbles unstopped to the background, which grabs pointer
+                // capture on this tiny circle; the release below then stops
+                // propagation before the background ever sees the matching
+                // pointerup to release it, leaving capture (and every
+                // future click) stuck on this pin.
+                e.stopPropagation()
+              }}
               onPointerOver={(e) => {
                 e.stopPropagation()
                 setHoveredPin({ gateId: gate.id, pin, isOutput: false })
