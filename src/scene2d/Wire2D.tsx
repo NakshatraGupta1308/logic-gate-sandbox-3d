@@ -43,9 +43,16 @@ function Wire2DComponent({ wire, fromGate, toGate }: Wire2DProps) {
       {/* Wide transparent path underneath widens the click/double-click hit
           target well past the thin visible stroke. */}
       <path d={d} fill="none" stroke="transparent" strokeWidth={0.32} style={{ cursor: 'pointer' }} />
-      <path d={d} fill="none" stroke={color} strokeWidth={active ? 0.05 : 0.036} strokeLinejoin="round" />
+      <path
+        d={d}
+        fill="none"
+        stroke={color}
+        strokeWidth={active ? 0.05 : 0.036}
+        strokeLinejoin="round"
+        pointerEvents="none"
+      />
       {active && (
-        <circle r={0.05} fill="#166534">
+        <circle r={0.05} fill="#166534" pointerEvents="none">
           <animateMotion dur="1.1s" repeatCount="indefinite" path={d} />
         </circle>
       )}

@@ -64,13 +64,15 @@ export function SceneRoot2D() {
     }
   }
 
-  // Finishes or cancels a wire drag no matter where the pointer is released,
-  // matching the 3D scene's global WireDragController: a release over an
-  // input pin's own onPointerUp already stopped propagation and completed
-  // it, so this only fires for every other case (background, a gate body,
-  // outside the window entirely).
+  // Finishes or cancels a wire drag no matter where the pointer is
+  // released. Registered on the capture phase (fires on the way down,
+  // before any element is reached) rather than the default bubble phase:
+  // a pin's own onPointerUp calls stopPropagation() after handling its
+  // case, which would otherwise stop a bubble-phase window listener from
+  // ever seeing the event and leave pendingWireFrom (and the enlarged
+  // hover state on whatever pin was last under the cursor) stuck forever.
   useEffect(() => {
-    function handlePointerUp() {
+    function finishDrag() {
       const state = useCircuitStore.getState()
       if (!state.pendingWireFrom) return
       if (state.hoveredPin && !state.hoveredPin.isOutput) {
@@ -80,8 +82,12 @@ export function SceneRoot2D() {
       }
       state.setInteracting(false)
     }
-    window.addEventListener('pointerup', handlePointerUp)
-    return () => window.removeEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointerup', finishDrag, { capture: true })
+    window.addEventListener('pointercancel', finishDrag, { capture: true })
+    return () => {
+      window.removeEventListener('pointerup', finishDrag, { capture: true })
+      window.removeEventListener('pointercancel', finishDrag, { capture: true })
+    }
   }, [])
 
   // React's onWheel listener is attached passively, so preventDefault()
@@ -268,6 +274,7 @@ function PendingWireLine2D({
       stroke="#eab308"
       strokeWidth={0.04}
       strokeDasharray="0.1 0.08"
+      pointerEvents="none"
     />
   )
 }

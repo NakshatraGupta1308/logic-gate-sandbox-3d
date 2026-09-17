@@ -140,18 +140,18 @@ export function exportSchematicPdf(gates: Gate[], wires: Wire[], options: Export
     }
     doc.setLineWidth(0.4)
     doc.setDrawColor(17, 17, 17)
-    const outputStubStart = drawGateSymbol(doc, gate.kind, bounds)
+    const stubs = drawGateSymbol(doc, gate.kind, bounds)
 
     const def = getGateDef(gate.kind)
     for (let i = 0; i < def.numInputs; i++) {
       const [wx, , wz] = pinPosition(gate, false, i)
       const [pinX, pinY] = toPage(wx, wz)
-      doc.line(pinX, pinY, px - bounds.halfWidth, pinY)
+      doc.line(pinX, pinY, stubs.inputStubX, pinY)
     }
     for (let i = 0; i < def.numOutputs; i++) {
       const [wx, , wz] = pinPosition(gate, true, i)
       const [pinX, pinY] = toPage(wx, wz)
-      doc.line(outputStubStart, pinY, pinX, pinY)
+      doc.line(stubs.outputStubX, pinY, pinX, pinY)
     }
 
     if (gate.kind === 'INPUT' || gate.kind === 'OUTPUT') {

@@ -9,6 +9,11 @@ import { pathCommandsToSvg } from './svgPath'
 const HALF_WIDTH = GATE_WIDTH / 2
 const HALF_HEIGHT = GATE_HEIGHT / 2
 const DRAG_THRESHOLD = 0.05
+// A pin's visible dot (PIN_RADIUS) is tiny at typical zoom levels, so its
+// click/drop target is a separate, much larger invisible circle: without
+// this, a wire drag that lands just barely off the dot falls through to
+// the gate body or background instead of completing on the pin.
+const PIN_HIT_RADIUS = 0.22
 
 interface GateSymbol2DProps {
   gate: Gate
@@ -79,6 +84,7 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
   }
 
   function handlePointerUp(e: React.PointerEvent) {
+    e.stopPropagation()
     isDragging.current = false
     ;(e.target as Element).releasePointerCapture?.(e.pointerId)
     setInteracting(false)
@@ -167,7 +173,7 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
         }
         return (
           <g key={`in-${pin}`}>
-            <line x1={px} y1={pz} x2={cx - HALF_WIDTH} y2={pz} stroke="#111111" strokeWidth={0.022} />
+            <line x1={px} y1={pz} x2={outline.inputStubX} y2={pz} stroke="#111111" strokeWidth={0.022} />
             <circle
               cx={px}
               cy={pz}
@@ -175,6 +181,13 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
               fill={color}
               stroke="#111111"
               strokeWidth={0.018}
+              pointerEvents="none"
+            />
+            <circle
+              cx={px}
+              cy={pz}
+              r={PIN_HIT_RADIUS}
+              fill="transparent"
               style={{ cursor: 'crosshair' }}
               onPointerOver={(e) => {
                 e.stopPropagation()
@@ -191,6 +204,7 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
                 e.stopPropagation()
                 if (useCircuitStore.getState().pendingWireFrom) {
                   completeWireDrag({ gateId: gate.id, pin, isOutput: false })
+                  setInteracting(false)
                 }
               }}
             />
@@ -212,6 +226,13 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
               fill={color}
               stroke="#111111"
               strokeWidth={0.018}
+              pointerEvents="none"
+            />
+            <circle
+              cx={px}
+              cy={pz}
+              r={PIN_HIT_RADIUS}
+              fill="transparent"
               style={{ cursor: 'crosshair' }}
               onPointerDown={(e) => {
                 e.stopPropagation()
