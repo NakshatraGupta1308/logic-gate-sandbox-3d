@@ -27,6 +27,17 @@ export function Toolbar() {
   const redo = useCircuitStore((s) => s.redo)
   const canUndo = useCircuitStore((s) => s.past.length > 0)
   const canRedo = useCircuitStore((s) => s.future.length > 0)
+  const gates = useCircuitStore((s) => s.gates)
+  const wires = useCircuitStore((s) => s.wires)
+
+  async function handleExportPdf() {
+    // Dynamically imported so jsPDF (and its bundled html2canvas/dompurify
+    // dependencies, pulled in unconditionally by its .html() plugin) only
+    // load when someone actually exports, instead of bloating the app's
+    // initial bundle.
+    const { exportSchematicPdf } = await import('../export/exportSchematicPdf')
+    exportSchematicPdf(gates, wires)
+  }
 
   return (
     <div className="comic-card pointer-events-auto absolute left-4 top-4 flex w-72 flex-col gap-3 p-4 text-sm text-black">
@@ -103,6 +114,14 @@ export function Toolbar() {
         </button>
         <button type="button" onClick={resetView} className="comic-btn px-2.5 py-1.5 text-xs font-bold">
           Reset View
+        </button>
+        <button
+          type="button"
+          onClick={handleExportPdf}
+          title="Save the current circuit as a PDF schematic with standard gate symbols"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Export PDF
         </button>
       </div>
     </div>
