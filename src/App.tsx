@@ -2,12 +2,14 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Toolbar } from './ui/Toolbar'
 import { Inspector } from './ui/Inspector'
 import { StartScreen } from './ui/StartScreen'
+import { SceneRoot2D } from './scene2d/SceneRoot2D'
 import { useCircuitStore } from './state/circuitStore'
 
 // The 3D scene pulls in three.js/@react-three/fiber/drei, by far the
 // heaviest part of the bundle. Loading it lazily means the start screen
 // paints immediately, without waiting on or parsing that code at all until
-// the user actually clicks Build.
+// the user actually clicks Build. The 2D scene is plain SVG with no heavy
+// dependencies, so it is imported eagerly and switches instantly.
 const SceneRoot = lazy(() => import('./scene/SceneRoot').then((m) => ({ default: m.SceneRoot })))
 
 function SceneLoading() {
@@ -22,6 +24,7 @@ function SceneLoading() {
 
 function App() {
   const [started, setStarted] = useState(false)
+  const viewMode = useCircuitStore((s) => s.viewMode)
 
   const deleteSelected = useCircuitStore((s) => s.deleteSelected)
   const cancelWireDrag = useCircuitStore((s) => s.cancelWireDrag)
@@ -89,9 +92,13 @@ function App() {
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-white">
-      <Suspense fallback={<SceneLoading />}>
-        <SceneRoot />
-      </Suspense>
+      {viewMode === '3d' ? (
+        <Suspense fallback={<SceneLoading />}>
+          <SceneRoot />
+        </Suspense>
+      ) : (
+        <SceneRoot2D />
+      )}
       <div className="pointer-events-none absolute inset-0">
         <Toolbar />
         <Inspector />
