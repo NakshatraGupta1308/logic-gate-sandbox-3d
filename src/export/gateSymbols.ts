@@ -29,12 +29,19 @@ function playPath(doc: jsPDF, commands: PathCommand[]) {
   }
 }
 
+export interface GateSymbolStubs {
+  /** X coordinate an output stub line should start from, past any bubble. */
+  outputStubX: number
+  /** X coordinate an input stub line should end at, reaching the back curve
+   * even where it bulges inward (see GateOutline.inputStubX). */
+  inputStubX: number
+}
+
 /**
  * Draws the schematic symbol for a gate kind inside the given bounds and
- * returns the x-coordinate its output stub should start from (past any
- * inversion bubble).
+ * returns where its input/output stub lines should meet it.
  */
-export function drawGateSymbol(doc: jsPDF, kind: GateKind, bounds: SymbolBounds): number {
+export function drawGateSymbol(doc: jsPDF, kind: GateKind, bounds: SymbolBounds): GateSymbolStubs {
   const outline = buildGateOutline(kind, bounds)
 
   setStyle(doc)
@@ -51,5 +58,5 @@ export function drawGateSymbol(doc: jsPDF, kind: GateKind, bounds: SymbolBounds)
     setStyle(doc)
     doc.circle(outline.bubble.cx, outline.bubble.cy, outline.bubble.r, 'FD')
   }
-  return outline.outputStubX
+  return { outputStubX: outline.outputStubX, inputStubX: outline.inputStubX }
 }

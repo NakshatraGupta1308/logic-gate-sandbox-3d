@@ -27,6 +27,15 @@ export interface GateOutline {
   bubble?: { cx: number; cy: number; r: number }
   /** X coordinate where the output stub line should begin, past any bubble. */
   outputStubX: number
+  /**
+   * X coordinate where an input stub line should end. For a flat back
+   * (AND/NAND, the triangle, the I/O box) this is just the back edge. For
+   * the concave OR/NOR/XOR/XNOR shield the back curve bulges inward, so a
+   * stub drawn only to the outer corner (`cx - halfWidth`) would visibly
+   * stop short of the curve for pins nearer the vertical center; this is
+   * the curve's deepest point, guaranteeing the stub always reaches it.
+   */
+  inputStubX: number
 }
 
 /** IEEE/ANSI "D" shape shared by AND and NAND: flat back, semicircular front. */
@@ -122,17 +131,32 @@ export function buildGateOutline(kind: GateKind, bounds: SymbolBounds): GateOutl
   const { cx, cy, halfWidth: bw, halfHeight: bh } = bounds
   const bubbleRadius = Math.min(bw, bh) * 0.18
   const tipX = cx + bw
+  const flatBackX = cx - bw
+  // Mirrors orBody/xorBackCurve's own backBulge/gap constants so the stub
+  // depth always matches whichever curve is actually the outermost one.
+  const shieldBackX = flatBackX + bw * 0.6
+  const xorBackX = flatBackX - bw * 0.22 + bw * 0.6
 
   switch (kind) {
     case 'AND':
     case 'NAND': {
       const bubble = kind === 'NAND' ? { cx: tipX + bubbleRadius, cy, r: bubbleRadius } : undefined
-      return { body: andBody(bounds), bubble, outputStubX: bubble ? tipX + bubbleRadius * 2 : tipX }
+      return {
+        body: andBody(bounds),
+        bubble,
+        outputStubX: bubble ? tipX + bubbleRadius * 2 : tipX,
+        inputStubX: flatBackX,
+      }
     }
     case 'OR':
     case 'NOR': {
       const bubble = kind === 'NOR' ? { cx: tipX + bubbleRadius, cy, r: bubbleRadius } : undefined
-      return { body: orBody(bounds), bubble, outputStubX: bubble ? tipX + bubbleRadius * 2 : tipX }
+      return {
+        body: orBody(bounds),
+        bubble,
+        outputStubX: bubble ? tipX + bubbleRadius * 2 : tipX,
+        inputStubX: shieldBackX,
+      }
     }
     case 'XOR':
     case 'XNOR': {
@@ -142,6 +166,7 @@ export function buildGateOutline(kind: GateKind, bounds: SymbolBounds): GateOutl
         backCurve: xorBackCurve(bounds),
         bubble,
         outputStubX: bubble ? tipX + bubbleRadius * 2 : tipX,
+        inputStubX: xorBackX,
       }
     }
     case 'NOT': {
@@ -149,12 +174,13 @@ export function buildGateOutline(kind: GateKind, bounds: SymbolBounds): GateOutl
         body: triangleBody(bounds),
         bubble: { cx: tipX + bubbleRadius, cy, r: bubbleRadius },
         outputStubX: tipX + bubbleRadius * 2,
+        inputStubX: flatBackX,
       }
     }
     case 'INPUT':
     case 'OUTPUT':
-      return { body: ioBox(bounds), outputStubX: tipX }
+      return { body: ioBox(bounds), outputStubX: tipX, inputStubX: flatBackX }
     default:
-      return { body: [], outputStubX: tipX }
+      return { body: [], outputStubX: tipX, inputStubX: flatBackX }
   }
 }
