@@ -22,10 +22,15 @@ export interface PinHandle {
   isOutput: boolean
 }
 
+export type ViewMode = '3d' | '2d'
+
 interface CircuitState {
   circuit: Circuit
   gates: Gate[]
   wires: Wire[]
+
+  viewMode: ViewMode
+  setViewMode: (mode: ViewMode) => void
 
   /** Gate kind armed for placement; the next workbench click drops one. */
   placingKind: GateKind | null
@@ -185,6 +190,9 @@ loadDemoCircuit(initialCircuit)
 export const useCircuitStore = create<CircuitState>((set, get) => ({
   circuit: initialCircuit,
   ...refresh(initialCircuit),
+
+  viewMode: '3d',
+  setViewMode: (mode) => set({ viewMode: mode }),
 
   placingKind: null,
   selectedGateId: null,

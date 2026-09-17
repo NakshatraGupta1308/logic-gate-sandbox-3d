@@ -2,7 +2,8 @@ import { memo, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { Gate, Wire } from '../engine'
-import { buildWireCurve, pinPosition } from './layout'
+import { pinPosition } from './layout'
+import { buildWireCurve } from './wireCurve3d'
 import { useCircuitStore } from '../state/circuitStore'
 
 const SAMPLE_COUNT = 24

@@ -1,7 +1,10 @@
+import { useState } from 'react'
 import type { GateKind } from '../engine'
 import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
 import { PRESETS, PRESET_ORDER } from '../state/presets'
+
+const COLLAPSED_KEY = 'logic-gate-sandbox-3d:toolbar-collapsed'
 
 const PALETTE: { kind: GateKind; label: string }[] = [
   { kind: 'INPUT', label: 'Input' },
@@ -29,6 +32,26 @@ export function Toolbar() {
   const canRedo = useCircuitStore((s) => s.future.length > 0)
   const gates = useCircuitStore((s) => s.gates)
   const wires = useCircuitStore((s) => s.wires)
+  const viewMode = useCircuitStore((s) => s.viewMode)
+  const setViewMode = useCircuitStore((s) => s.setViewMode)
+
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+
+  function setCollapsedPersisted(value: boolean) {
+    setCollapsed(value)
+    try {
+      window.localStorage.setItem(COLLAPSED_KEY, value ? '1' : '0')
+    } catch {
+      // Storage unavailable (private browsing, quota); collapse state just
+      // won't survive a reload.
+    }
+  }
 
   async function handleExportPdf() {
     // Dynamically imported so jsPDF (and its bundled html2canvas/dompurify
@@ -39,14 +62,54 @@ export function Toolbar() {
     exportSchematicPdf(gates, wires)
   }
 
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsedPersisted(false)}
+        title="Show toolbar"
+        className="comic-btn pointer-events-auto absolute left-4 top-4 px-3 py-2 text-sm font-bold"
+      >
+        ☰ Toolbar
+      </button>
+    )
+  }
+
   return (
-    <div className="comic-card pointer-events-auto absolute left-4 top-4 flex w-72 flex-col gap-3 p-4 text-sm text-black">
-      <div>
-        <h1 className="text-lg font-extrabold tracking-tight">Logic Gate Sandbox 3D</h1>
-        <p className="mt-1 text-xs font-medium text-neutral-600">
-          Pick a gate, click the workbench to place it. Drag from an output pin (right side) to
-          an input pin (left side) to wire them. Click an INPUT gate to toggle it.
-        </p>
+    <div className="comic-card pointer-events-auto absolute left-4 top-4 flex max-h-[calc(100vh-2rem)] w-72 flex-col gap-3 overflow-y-auto p-4 text-sm text-black">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h1 className="text-lg font-extrabold tracking-tight">Logic Gate Sandbox 3D</h1>
+          <p className="mt-1 text-xs font-medium text-neutral-600">
+            Pick a gate, click the workbench to place it. Drag from an output pin (right side) to
+            an input pin (left side) to wire them. Click an INPUT gate to toggle it.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsedPersisted(true)}
+          title="Hide toolbar"
+          className="comic-btn shrink-0 px-2 py-1 text-xs font-bold"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div className="flex gap-2 border-t-2 border-black pt-3">
+        <button
+          type="button"
+          onClick={() => setViewMode('3d')}
+          className={`comic-btn flex-1 px-2.5 py-1.5 text-xs font-bold ${viewMode === '3d' ? 'comic-btn-active' : ''}`}
+        >
+          3D View
+        </button>
+        <button
+          type="button"
+          onClick={() => setViewMode('2d')}
+          className={`comic-btn flex-1 px-2.5 py-1.5 text-xs font-bold ${viewMode === '2d' ? 'comic-btn-active' : ''}`}
+        >
+          2D Schematic
+        </button>
       </div>
 
       <div className="grid grid-cols-3 gap-2">

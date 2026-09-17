@@ -7,7 +7,8 @@ import { useCircuitStore } from '../state/circuitStore'
 import { BOX_HALF_SIZE, Workbench } from './Workbench'
 import { GateMesh } from './GateMesh'
 import { WireCurve } from './WireCurve'
-import { buildWireCurve, pinPosition } from './layout'
+import { pinPosition } from './layout'
+import { buildWireCurve } from './wireCurve3d'
 
 function WireDragController() {
   useEffect(() => {

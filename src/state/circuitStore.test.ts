@@ -97,3 +97,18 @@ describe('undo/redo', () => {
     expect(useCircuitStore.getState().future).toHaveLength(0)
   })
 })
+
+describe('viewMode', () => {
+  it('defaults to 3d and switches to 2d and back without touching the circuit', () => {
+    expect(useCircuitStore.getState().viewMode).toBe('3d')
+
+    useCircuitStore.getState().placeGate('AND', [0, 0.4, 0])
+    useCircuitStore.getState().setViewMode('2d')
+    expect(useCircuitStore.getState().viewMode).toBe('2d')
+    expect(useCircuitStore.getState().gates).toHaveLength(1)
+
+    useCircuitStore.getState().setViewMode('3d')
+    expect(useCircuitStore.getState().viewMode).toBe('3d')
+    expect(useCircuitStore.getState().gates).toHaveLength(1)
+  })
+})
