@@ -6,13 +6,17 @@ export type Expr =
   | { type: 'ident'; name: string }
   | { type: 'bitlit'; value: '0' | '1' }
   | { type: 'strlit'; bits: string }
+  | { type: 'intlit'; value: number }
   | { type: 'indexed'; base: string; index: number }
   | { type: 'not'; operand: Expr }
   | { type: 'binop'; op: 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor'; left: Expr; right: Expr }
+  | { type: 'add'; op: '+' | '-'; left: Expr; right: Expr }
   | { type: 'mux'; a: Expr; b: Expr; sel: Expr }
   | { type: 'compare'; op: CompareOp; left: Expr; right: Expr }
   | { type: 'risingEdge'; signal: string }
   | { type: 'event'; signal: string }
+  /** `(others => value)`: only ever meaningful as a whole assignment's right-hand side, where the parser desugars it away (see expandOthersAssignment) into one plain assignment per bit; if one somehow reaches the builder unresolved, that is an unsupported use of it. */
+  | { type: 'othersFill'; value: Expr }
 
 /** A `std_logic_vector(high downto low)` or `(low to high)` range. */
 export interface VectorRange {
@@ -147,6 +151,8 @@ const COMPARE_OPS = new Set(['=', '<=', '>=', '<', '>'])
 class Cursor {
   private pos = 0
   private tokens: Token[]
+  /** The current entity's own ports/signals, keyed by name - reset per entity by parseEntity right after its declarations are parsed. Only consulted for "(others => value)" filling a whole (unindexed, unsliced) vector target, where the width to fill isn't given by the target syntax itself. */
+  typesByName = new Map<string, VhdlType>()
   constructor(tokens: Token[]) {
     this.tokens = tokens
   }
@@ -304,9 +310,29 @@ function parseEntity(cursor: Cursor): ParsedEntity {
     const names = parseIdentList(cursor)
     cursor.eat(':')
     const type = parseType(cursor, names[0])
+    if (cursor.tryEat(':=')) {
+      const line = cursor.peek()?.line ?? 1
+      const initializer = parseBinaryChain(cursor)
+      // Every signal here already starts at all-0 (an ordinary INPUT/DFF's
+      // default, or a combinational signal that just settles immediately),
+      // so a zero initializer needs nothing further; anything else would
+      // need a startup value this instant-simulation model can't hold.
+      if (!isZeroLiteral(initializer)) {
+        throw new VhdlSyntaxError(
+          `"${names[0]}" has a non-zero initial value, which is not supported (every signal here already starts at 0)`,
+          line,
+        )
+      }
+    }
     cursor.eat(';')
     for (const name of names) signals.push({ name, type })
   }
+
+  // Consulted only by a bare "(others => value)" filling a whole vector
+  // target with no index/slice of its own to say how wide it should be.
+  cursor.typesByName = new Map()
+  for (const port of ports) cursor.typesByName.set(port.name, port.type)
+  for (const signal of signals) cursor.typesByName.set(signal.name, signal.type)
 
   cursor.eat('begin')
 
@@ -317,16 +343,20 @@ function parseEntity(cursor: Cursor): ParsedEntity {
     if (cursor.peek()?.text === 'process') {
       processes.push(parseProcess(cursor))
     } else if (cursor.peek()?.text === 'with') {
-      assignments.push(parseSelectedAssignment(cursor))
+      assignments.push(...parseSelectedAssignment(cursor))
+    } else if (cursor.peek()?.kind === 'ident' && cursor.peek(1)?.text === ':' && cursor.peek(2)?.text === 'process') {
+      cursor.next() // label
+      cursor.next() // ':'
+      processes.push(parseProcess(cursor))
     } else if (cursor.peek()?.kind === 'ident' && cursor.peek(1)?.text === ':') {
       instantiations.push(parseInstantiation(cursor))
     } else {
       const line = cursor.peek()?.line ?? 1
-      const { target, targetIndex } = parseAssignmentTarget(cursor)
+      const target = parseAssignmentTarget(cursor)
       cursor.eat('<=')
       const expr = parseExpr(cursor)
       cursor.eat(';')
-      assignments.push({ target, targetIndex, expr, line })
+      for (const a of expandOthersAssignment(cursor, target, expr, line)) assignments.push({ ...a, line })
     }
   }
 
@@ -382,16 +412,16 @@ function parseInstantiation(cursor: Cursor): ParsedInstantiation {
  * `with <selector> select <target> <= <value> when <choice>, ... , <value>
  * when others;` - a concurrent selected signal assignment, VHDL's dataflow-
  * statement equivalent of a process's `case`/`when` (see parseCaseStatement
- * for the same desugaring idea). Reduced directly to one ParsedAssignment
- * whose expr is a chain of muxes, so it needs no support anywhere else in
- * the builder beyond what a plain concurrent assignment already gets.
+ * for the same desugaring idea). Reduced directly to a chain of muxes
+ * assigned to target, so it needs no support anywhere else in the builder
+ * beyond what a plain concurrent assignment already gets.
  */
-function parseSelectedAssignment(cursor: Cursor): ParsedAssignment {
+function parseSelectedAssignment(cursor: Cursor): ParsedAssignment[] {
   const line = cursor.peek()?.line ?? 1
   cursor.eat('with')
   const selector = parseBinaryChain(cursor)
   cursor.eat('select')
-  const { target, targetIndex } = parseAssignmentTarget(cursor)
+  const target = parseAssignmentTarget(cursor)
   cursor.eat('<=')
 
   const items: { value: Expr; choice: Expr }[] = []
@@ -418,7 +448,7 @@ function parseSelectedAssignment(cursor: Cursor): ParsedAssignment {
   for (let i = items.length - 1; i >= 0; i--) {
     expr = { type: 'mux', a: expr, b: items[i].value, sel: { type: 'compare', op: '=', left: selector, right: items[i].choice } }
   }
-  return { target, targetIndex, expr, line }
+  return expandOthersAssignment(cursor, target, expr, line).map((a) => ({ ...a, line }))
 }
 
 /** One or more comma-separated identifiers sharing a single declaration. */
@@ -490,6 +520,25 @@ function normalizeBitString(raw: string, line: number): string {
     .join('')
 }
 
+/** True if `expr` is a compile-time-constant all-0 value (a plain '0', a bit string of only 0s, or the integer literal 0). */
+function isZeroLiteral(expr: Expr): boolean {
+  if (expr.type === 'bitlit') return expr.value === '0'
+  if (expr.type === 'strlit') return expr.bits.split('').every((bit) => bit === '0')
+  if (expr.type === 'intlit') return expr.value === 0
+  return false
+}
+
+/** Bits needed to represent 0..maxValue in unsigned binary (integer-based, to avoid floating-point log2 rounding at exact powers of two). */
+function bitsNeededFor(maxValue: number): number {
+  let width = 1
+  let remaining = Math.floor(maxValue / 2)
+  while (remaining > 0) {
+    width++
+    remaining = Math.floor(remaining / 2)
+  }
+  return width
+}
+
 function parseType(cursor: Cursor, ownerName: string): VhdlType {
   const typeToken = cursor.next()
   if (typeToken.text === 'std_logic') return { kind: 'bit' }
@@ -510,8 +559,34 @@ function parseType(cursor: Cursor, ownerName: string): VhdlType {
     }
     return { kind: 'vector', range }
   }
+  if (typeToken.text === 'integer') {
+    // A plain (unconstrained) "integer" would need this app's usual
+    // 2-valued, fixed-width bit model to instead handle a signed 32-bit
+    // range - not attempted; only an explicit non-negative range, sized to
+    // exactly the bits it needs and built on the same std_logic_vector
+    // machinery every other vector already uses, is supported.
+    cursor.eat('range')
+    const boundA = parseIntLiteral(cursor)
+    let downto: boolean
+    if (cursor.tryEat('downto')) downto = true
+    else {
+      cursor.eat('to')
+      downto = false
+    }
+    const boundB = parseIntLiteral(cursor)
+    const low = downto ? boundB : boundA
+    const high = downto ? boundA : boundB
+    if (low !== 0) {
+      throw new VhdlSyntaxError(
+        `"${ownerName}" has an integer range starting at ${low}, but only a non-negative range starting at 0 is supported`,
+        typeToken.line,
+      )
+    }
+    const width = bitsNeededFor(high)
+    return { kind: 'vector', range: { high: width - 1, low: 0, downto: true } }
+  }
   throw new VhdlSyntaxError(
-    `"${ownerName}" has type "${typeToken.text}", but only std_logic and std_logic_vector are supported`,
+    `"${ownerName}" has type "${typeToken.text}", but only std_logic, std_logic_vector, and a constrained integer (range 0 to N) are supported`,
     typeToken.line,
   )
 }
@@ -526,6 +601,7 @@ function parseProcess(cursor: Cursor): ParsedProcess {
   const { branches, elseBody } = parseTopStatement(cursor)
   cursor.eat('end')
   cursor.eat('process')
+  if (cursor.peek()?.text !== ';') cursor.eatIdent() // optional trailing label, e.g. "end process counter;"
   cursor.eat(';')
 
   const [onlyBranch] = branches
@@ -630,11 +706,12 @@ function parseStatements(cursor: Cursor): Statement[] {
       const { branches, elseBody } = parseTopStatement(cursor)
       statements.push({ kind: 'if', branches, elseBody })
     } else {
-      const { target, targetIndex } = parseAssignmentTarget(cursor)
+      const line = cursor.peek()?.line ?? 1
+      const target = parseAssignmentTarget(cursor)
       cursor.eat('<=')
       const expr = parseExpr(cursor)
       cursor.eat(';')
-      statements.push({ kind: 'assign', target, targetIndex, expr })
+      for (const a of expandOthersAssignment(cursor, target, expr, line)) statements.push({ kind: 'assign', ...a })
     }
   }
   if (statements.length === 0) {
@@ -643,15 +720,61 @@ function parseStatements(cursor: Cursor): Statement[] {
   return statements
 }
 
-/** An assignment's left-hand side: a plain signal name, or one indexed bit of a vector (`y(0)`). */
-function parseAssignmentTarget(cursor: Cursor): { target: string; targetIndex: number | null } {
+interface AssignmentTarget {
+  target: string
+  targetIndex: number | null
+  /** The VHDL indices a `name(high downto low)`/`name(low to high)` slice target covers, in that slice's own declaration order - null for a plain name or a single index. */
+  targetSlice: number[] | null
+}
+
+/** An assignment's left-hand side: a plain signal name, one indexed bit of a vector (`y(0)`), or a slice of one (`y(3 downto 1)`). */
+function parseAssignmentTarget(cursor: Cursor): AssignmentTarget {
   const target = cursor.eatIdent()
   if (cursor.tryEat('(')) {
-    const targetIndex = parseIntLiteral(cursor)
+    const first = parseIntLiteral(cursor)
+    if (cursor.peek()?.text === 'downto' || cursor.peek()?.text === 'to') {
+      const downto = cursor.next().text === 'downto'
+      const second = parseIntLiteral(cursor)
+      cursor.eat(')')
+      const range: VectorRange = downto ? { high: first, low: second, downto } : { high: second, low: first, downto }
+      return { target, targetIndex: null, targetSlice: declOrderIndices(range) }
+    }
     cursor.eat(')')
-    return { target, targetIndex }
+    return { target, targetIndex: first, targetSlice: null }
   }
-  return { target, targetIndex: null }
+  return { target, targetIndex: null, targetSlice: null }
+}
+
+/**
+ * A plain assignment passes through unchanged. `target <= (others => v);`
+ * has nothing in this app's per-bit gate model to broadcast a single value
+ * across a whole vector with, so it is expanded here into one plain
+ * assignment per bit instead - using the target's own slice bounds if it
+ * named one, or (for a bare, unindexed target) the full declared width of
+ * that name, looked up from the entity's own ports/signals.
+ */
+function expandOthersAssignment(
+  cursor: Cursor,
+  { target, targetIndex, targetSlice }: AssignmentTarget,
+  expr: Expr,
+  line: number,
+): { target: string; targetIndex: number | null; expr: Expr }[] {
+  if (expr.type !== 'othersFill') return [{ target, targetIndex, expr }]
+
+  if (targetSlice) return targetSlice.map((index) => ({ target, targetIndex: index, expr: expr.value }))
+
+  if (targetIndex !== null) {
+    throw new VhdlSyntaxError(
+      `"${target}(${targetIndex})" is a single bit; "(others => ...)" fills a whole vector or slice, not one bit`,
+      line,
+    )
+  }
+
+  const type = cursor.typesByName.get(target)
+  if (!type || type.kind !== 'vector') {
+    throw new VhdlSyntaxError(`"${target}" is not declared as a vector, so "(others => ...)" has nothing to fill`, line)
+  }
+  return declOrderIndices(type.range).map((index) => ({ target, targetIndex: index, expr: expr.value }))
 }
 
 function isBranchKeyword(text: string): boolean {
@@ -684,12 +807,22 @@ function parseBinaryChain(cursor: Cursor): Expr {
 }
 
 function parseComparison(cursor: Cursor): Expr {
-  const left = parseUnary(cursor)
+  const left = parseAdding(cursor)
   const token = cursor.peek()
   if (token?.kind === 'punct' && COMPARE_OPS.has(token.text)) {
     cursor.next()
-    const right = parseUnary(cursor)
+    const right = parseAdding(cursor)
     return { type: 'compare', op: token.text as CompareOp, left, right }
+  }
+  return left
+}
+
+function parseAdding(cursor: Cursor): Expr {
+  let left = parseUnary(cursor)
+  while (cursor.peek()?.kind === 'punct' && (cursor.peek()!.text === '+' || cursor.peek()!.text === '-')) {
+    const op = cursor.next().text as '+' | '-'
+    const right = parseUnary(cursor)
+    left = { type: 'add', op, left, right }
   }
   return left
 }
@@ -703,6 +836,14 @@ function parseUnary(cursor: Cursor): Expr {
 
 function parseAtom(cursor: Cursor): Expr {
   if (cursor.tryEat('(')) {
+    // "others" is never itself a valid boolean sub-expression, so seeing it
+    // right after "(" unambiguously means a "(others => value)" aggregate.
+    if (cursor.tryEat('others')) {
+      cursor.eat('=>')
+      const value = parseExpr(cursor)
+      cursor.eat(')')
+      return { type: 'othersFill', value }
+    }
     // Full parseExpr (not parseBinaryChain) here: the closing ")" already
     // disambiguates where the sub-expression ends, so a when/else mux
     // nested inside parens is unambiguous even though a bare when/else is
@@ -726,6 +867,10 @@ function parseOperand(cursor: Cursor): Expr {
   if (token?.kind === 'bitlit') {
     cursor.next()
     return { type: 'bitlit', value: token.text as '0' | '1' }
+  }
+  if (token?.kind === 'number') {
+    cursor.next()
+    return { type: 'intlit', value: Number(token.text) }
   }
   if (token?.kind === 'strlit') {
     cursor.next()

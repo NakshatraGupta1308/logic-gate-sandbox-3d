@@ -198,11 +198,14 @@ function renameExpr(expr: Expr, rename: (name: string) => string): Expr {
       return { type: 'indexed', base: rename(expr.base), index: expr.index }
     case 'bitlit':
     case 'strlit':
+    case 'intlit':
       return expr
     case 'not':
       return { type: 'not', operand: renameExpr(expr.operand, rename) }
     case 'binop':
       return { type: 'binop', op: expr.op, left: renameExpr(expr.left, rename), right: renameExpr(expr.right, rename) }
+    case 'add':
+      return { type: 'add', op: expr.op, left: renameExpr(expr.left, rename), right: renameExpr(expr.right, rename) }
     case 'mux':
       return { type: 'mux', a: renameExpr(expr.a, rename), b: renameExpr(expr.b, rename), sel: renameExpr(expr.sel, rename) }
     case 'compare':
@@ -211,6 +214,8 @@ function renameExpr(expr: Expr, rename: (name: string) => string): Expr {
       return { type: 'risingEdge', signal: rename(expr.signal) }
     case 'event':
       return { type: 'event', signal: rename(expr.signal) }
+    case 'othersFill':
+      return { type: 'othersFill', value: renameExpr(expr.value, rename) }
   }
 }
 

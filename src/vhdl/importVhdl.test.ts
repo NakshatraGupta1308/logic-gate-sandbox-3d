@@ -995,10 +995,10 @@ describe("importVhdl: clk'event idiom and nested if inside a process", () => {
     expect(q.inputValues[0]).toBe(false) // reset wins over d, even though d is still 1
   })
 
-  it('rejects a nested if inside a process that does not assign the target in every branch', () => {
+  it('holds a flip-flop\'s own current value on a path a clocked process leaves untouched (register with enable)', () => {
     const vhdl = `
       entity t is
-        port (d : in std_logic; clk : in std_logic; rst : in std_logic; q : out std_logic);
+        port (clk : in std_logic; rst : in std_logic; q : out std_logic);
       end entity t;
       architecture rtl of t is
         signal qs : std_logic;
@@ -1015,9 +1015,54 @@ describe("importVhdl: clk'event idiom and nested if inside a process", () => {
       end architecture rtl;
     `
     const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+    const [clk, rst] = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const [q] = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+
+    function setBit(gate: Gate, value: boolean) {
+      if (gate.outputValues[0] !== value) circuit.toggleInput(gate.id)
+    }
+    function pulseClock() {
+      setBit(clk, false)
+      simulate(circuit)
+      setBit(clk, true)
+      simulate(circuit)
+    }
+
+    setBit(rst, true)
+    pulseClock()
+    expect(q.inputValues[0]).toBe(false)
+
+    setBit(rst, false)
+    pulseClock() // rst not asserted: qs is never assigned this edge, so it holds (stays false)
+    expect(q.inputValues[0]).toBe(false)
+  })
+
+  it('still rejects a nested if inside a combinational process that does not assign the target in every branch', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; b : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a, b)
+        begin
+          if (a = '1') then
+            if (b = '1') then
+              y <= '0';
+            end if;
+          else
+            y <= '1';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.error).toContain('qs')
+    expect(result.error).toContain('y')
   })
 })
 
@@ -1617,5 +1662,207 @@ describe('importVhdl: hex literals and "with ... select" (selected signal assign
       const outHex = parseInt(outputs.map((g) => (g.inputValues[0] ? '1' : '0')).join(''), 2).toString(16)
       expect(outHex).toBe(sbox[i])
     }
+  })
+})
+
+describe('importVhdl: integer range signals and arithmetic (+/-)', () => {
+  it('declares an integer range signal as a fixed-width vector and adds a literal to it', () => {
+    const vhdl = `
+      entity t is
+        port (clk : in std_logic; y : out std_logic_vector(1 downto 0));
+      end t;
+      architecture rtl of t is
+        signal count : integer range 0 to 3 := 0;
+      begin
+        process(clk)
+        begin
+          if rising_edge(clk) then
+            count <= count + 1;
+          end if;
+        end process;
+        y <= count;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+    const [clk] = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+
+    function pulseClock() {
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+    }
+    function readCount() {
+      return parseInt(outputs.map((g) => (g.inputValues[0] ? '1' : '0')).join(''), 2)
+    }
+
+    simulate(circuit)
+    expect(readCount()).toBe(0)
+    pulseClock()
+    expect(readCount()).toBe(1)
+    pulseClock()
+    expect(readCount()).toBe(2)
+    pulseClock()
+    expect(readCount()).toBe(3)
+    pulseClock() // 3 + 1 = 4, which wraps to 0 in 2 bits, matching real fixed-width hardware
+    expect(readCount()).toBe(0)
+  })
+
+  it('subtracts with "-", using the same two\'s-complement construction as an export-side subtractor', () => {
+    const vhdl = `
+      entity t is
+        port (y : out std_logic_vector(2 downto 0));
+      end t;
+      architecture rtl of t is
+      begin
+        y <= 5 - 2;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(parseInt(outputs.map((g) => (g.inputValues[0] ? '1' : '0')).join(''), 2)).toBe(3)
+  })
+
+  it('rejects a signal with a non-zero initial value', () => {
+    const vhdl = `
+      entity t is
+        port (y : out std_logic);
+      end t;
+      architecture rtl of t is
+        signal s : std_logic := '1';
+      begin
+        y <= s;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('non-zero')
+  })
+})
+
+describe('importVhdl: "(others => value)" aggregates', () => {
+  it('fills a whole vector target from a scalar value', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic_vector(3 downto 0));
+      end t;
+      architecture rtl of t is
+      begin
+        y <= (others => a);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [a] = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    simulate(result.circuit)
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([false, false, false, false])
+    result.circuit.toggleInput(a.id)
+    simulate(result.circuit)
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([true, true, true, true])
+  })
+
+  it('fills a full-width slice target from a scalar value (BlinkLED-style "y(3 downto 0) <= (others => x);")', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic_vector(3 downto 0));
+      end t;
+      architecture rtl of t is
+      begin
+        y (3 downto 0) <= (others => a);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [a] = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    result.circuit.toggleInput(a.id)
+    simulate(result.circuit)
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([true, true, true, true])
+  })
+})
+
+describe('importVhdl: a real-world hand-written blinking-LED counter (BlinkLED)', () => {
+  it('imports a clocked counter that toggles a "pulse" register on overflow and mirrors it onto an LED vector, matching the real file\'s structure (scaled down to a 2-bit counter for a fast test)', () => {
+    // Same shape as the actual uploaded blink.vhdl (an integer counter with
+    // a synchronous "reached max -> reset and toggle pulse" branch, and
+    // pulse broadcast onto an LED vector via a full-width slice aggregate),
+    // just with `range 0 to 3` instead of `0 to 49999999` so the test does
+    // not need tens of millions of simulated clock edges; and with the
+    // original file's two missing semicolons (after each "end if") fixed,
+    // since those are genuine syntax errors independent of anything this
+    // importer added support for.
+    const vhdl = `
+      library IEEE;
+      use IEEE.STD_LOGIC_1164.ALL;
+
+      entity BlinkLED is
+        Port ( CLK : in  STD_LOGIC;
+               LED : out STD_LOGIC_VECTOR (3 downto 0)
+             );
+      end BlinkLED;
+
+      architecture Code of BlinkLED is
+        signal pulse : std_logic := '0';
+        signal count : integer range 0 to 3 := 0;
+      begin
+        counter : process(CLK)
+        begin
+          if CLK'event and CLK = '1' then
+            if count = 3 then
+              count <= 0;
+              pulse <= not pulse;
+            else
+              count <= count + 1;
+            end if;
+          end if;
+        end process;
+
+        LED (3 downto 0) <= (others => pulse);
+      end Code;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+    const [clk] = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+
+    function pulseClock() {
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+    }
+    function ledValue() {
+      return outputs.map((o) => (o.inputValues[0] ? 1 : 0))
+    }
+
+    simulate(circuit)
+    expect(ledValue()).toEqual([0, 0, 0, 0]) // pulse starts low
+    pulseClock() // count 0 -> 1
+    expect(ledValue()).toEqual([0, 0, 0, 0])
+    pulseClock() // count 1 -> 2
+    expect(ledValue()).toEqual([0, 0, 0, 0])
+    pulseClock() // count 2 -> 3
+    expect(ledValue()).toEqual([0, 0, 0, 0])
+    pulseClock() // count reached 3: resets to 0 and toggles pulse high
+    expect(ledValue()).toEqual([1, 1, 1, 1])
+    pulseClock()
+    pulseClock()
+    pulseClock()
+    expect(ledValue()).toEqual([1, 1, 1, 1])
+    pulseClock() // count reaches 3 again: toggles pulse back low
+    expect(ledValue()).toEqual([0, 0, 0, 0])
   })
 })
