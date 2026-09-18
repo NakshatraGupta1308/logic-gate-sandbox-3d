@@ -70,12 +70,23 @@ interface ExportOptions {
   filename?: string
 }
 
+/** How far (in mm) a gate can be positioned outside the current tile's window before its symbol is guaranteed to be fully off-page and safe to skip drawing entirely. */
+const CULL_MARGIN = 40
+
 /**
  * Renders the current circuit as a vector PDF schematic using standard
  * IEEE/ANSI gate symbols, laid out directly from each gate's existing
  * (x, z) position in the 3D scene (a lossless top-down projection, since
  * every gate sits at the same height) rather than an auto-layout that
  * would reflow the user's own arrangement.
+ *
+ * A circuit that fits on one page at a legible scale (between MIN_SCALE
+ * and MAX_SCALE) is centered on a single page, as before. A bigger one is
+ * never shrunk past MIN_SCALE to force-fit it (that just crams gates and
+ * labels into an unreadable overlapping mess) - instead the drawing is
+ * tiled across as many pages as it takes at MIN_SCALE, arranged in a grid
+ * (row-major, left to right then top to bottom) so it can be reassembled
+ * by laying the printed sheets out next to each other.
  */
 export function exportSchematicPdf(gates: Gate[], wires: Wire[], options: ExportOptions = {}) {
   const filename = options.filename ?? 'circuit-schematic.pdf'
@@ -116,69 +127,106 @@ export function exportSchematicPdf(gates: Gate[], wires: Wire[], options: Export
 
   const drawW = worldW * scale
   const drawH = worldH * scale
-  const offsetX = MARGIN + Math.max(0, (availW - drawW) / 2)
-  const offsetY = MARGIN + TITLE_SPACE + Math.max(0, (availH - drawH) / 2)
-
-  function toPage(x: number, z: number): [number, number] {
-    return [offsetX + (x - minX) * scale, offsetY + (z - minZ) * scale]
-  }
+  const cols = Math.max(1, Math.ceil(drawW / availW))
+  const rows = Math.max(1, Math.ceil(drawH / availH))
+  const singlePage = cols === 1 && rows === 1
 
   const doc = new jsPDF({ orientation, unit: 'mm', format: 'a4' })
-  drawTitle(doc, pageW)
-
   const gateById = new Map(gates.map((g) => [g.id, g]))
+  const totalPages = rows * cols
 
-  doc.setDrawColor(60, 60, 60)
-  doc.setLineWidth(0.35)
-  for (const wire of wires) {
-    const fromGate = gateById.get(wire.from.gateId)
-    const toGate = gateById.get(wire.to.gateId)
-    if (!fromGate || !toGate) continue
-    const [fx, , fz] = pinPosition(fromGate, true, wire.from.pin)
-    const [tx, , tz] = pinPosition(toGate, false, wire.to.pin)
-    const [px1, py1] = toPage(fx, fz)
-    const [px2, py2] = toPage(tx, tz)
-    drawElbowWire(doc, px1, py1, px2, py2)
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      if (row > 0 || col > 0) doc.addPage()
+
+      // A single page keeps the drawing centered, exactly as before a
+      // bigger circuit could ever need tiling; a tiled page instead anchors
+      // each one to the top-left corner of its own slice of the drawing, so
+      // together they cover it with no gaps or double-counted overlap.
+      const offsetX = singlePage ? MARGIN + Math.max(0, (availW - drawW) / 2) : MARGIN - col * availW
+      const offsetY = singlePage
+        ? MARGIN + TITLE_SPACE + Math.max(0, (availH - drawH) / 2)
+        : MARGIN + TITLE_SPACE - row * availH
+
+      function toPage(x: number, z: number): [number, number] {
+        return [offsetX + (x - minX) * scale, offsetY + (z - minZ) * scale]
+      }
+
+      drawTitle(doc, pageW)
+      if (!singlePage) {
+        const pageNumber = row * cols + col + 1
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(9)
+        doc.setTextColor(90, 90, 90)
+        doc.text(
+          `Sheet ${pageNumber} of ${totalPages} (row ${row + 1}/${rows}, col ${col + 1}/${cols})`,
+          MARGIN,
+          MARGIN + 5,
+        )
+      }
+
+      // Cheap visibility check: a gate whose symbol cannot possibly reach
+      // this tile's window is skipped, so a many-page export does not pay
+      // for drawing every gate on every one of its pages.
+      const isVisible = (px: number, py: number) =>
+        px > -CULL_MARGIN && px < pageW + CULL_MARGIN && py > -CULL_MARGIN && py < pageH + CULL_MARGIN
+
+      doc.setDrawColor(60, 60, 60)
+      doc.setLineWidth(0.35)
+      for (const wire of wires) {
+        const fromGate = gateById.get(wire.from.gateId)
+        const toGate = gateById.get(wire.to.gateId)
+        if (!fromGate || !toGate) continue
+        const [fx, , fz] = pinPosition(fromGate, true, wire.from.pin)
+        const [tx, , tz] = pinPosition(toGate, false, wire.to.pin)
+        const [px1, py1] = toPage(fx, fz)
+        const [px2, py2] = toPage(tx, tz)
+        if (!isVisible(px1, py1) && !isVisible(px2, py2)) continue
+        drawElbowWire(doc, px1, py1, px2, py2)
+      }
+
+      for (const gate of gates) {
+        const [px, py] = toPage(gate.position[0], gate.position[2])
+        if (!isVisible(px, py)) continue
+        const bounds: SymbolBounds = {
+          cx: px,
+          cy: py,
+          halfWidth: HALF_WIDTH * scale,
+          halfHeight: HALF_HEIGHT * scale,
+        }
+        doc.setLineWidth(0.4)
+        doc.setDrawColor(17, 17, 17)
+        const stubs = drawGateSymbol(doc, gate.kind, bounds)
+
+        const def = getGateDef(gate.kind)
+        for (let i = 0; i < def.numInputs; i++) {
+          const [wx, , wz] = pinPosition(gate, false, i)
+          const [pinX, pinY] = toPage(wx, wz)
+          doc.line(pinX, pinY, stubs.inputStubX, pinY)
+        }
+        for (let i = 0; i < def.numOutputs; i++) {
+          const [wx, , wz] = pinPosition(gate, true, i)
+          const [pinX, pinY] = toPage(wx, wz)
+          doc.line(stubs.outputStubX, pinY, pinX, pinY)
+        }
+
+        if (gate.kind === 'INPUT' || gate.kind === 'OUTPUT') {
+          const value = gate.kind === 'INPUT' ? gate.outputValues[0] : gate.inputValues[0]
+          doc.setFont('helvetica', 'bold')
+          doc.setFontSize(Math.max(7, scale * 0.35))
+          doc.setTextColor(17, 17, 17)
+          doc.text(value ? '1' : '0', px, py, { align: 'center', baseline: 'middle' })
+        }
+
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(Math.max(5, scale * 0.16))
+        doc.setTextColor(90, 90, 90)
+        doc.text(def.label, px, py + bounds.halfHeight + scale * 0.22, { align: 'center' })
+      }
+
+      drawLegend(doc, usedKinds, pageW, pageH - MARGIN - LEGEND_SPACE + 4)
+    }
   }
 
-  for (const gate of gates) {
-    const [px, py] = toPage(gate.position[0], gate.position[2])
-    const bounds: SymbolBounds = {
-      cx: px,
-      cy: py,
-      halfWidth: HALF_WIDTH * scale,
-      halfHeight: HALF_HEIGHT * scale,
-    }
-    doc.setLineWidth(0.4)
-    doc.setDrawColor(17, 17, 17)
-    const stubs = drawGateSymbol(doc, gate.kind, bounds)
-
-    const def = getGateDef(gate.kind)
-    for (let i = 0; i < def.numInputs; i++) {
-      const [wx, , wz] = pinPosition(gate, false, i)
-      const [pinX, pinY] = toPage(wx, wz)
-      doc.line(pinX, pinY, stubs.inputStubX, pinY)
-    }
-    for (let i = 0; i < def.numOutputs; i++) {
-      const [wx, , wz] = pinPosition(gate, true, i)
-      const [pinX, pinY] = toPage(wx, wz)
-      doc.line(stubs.outputStubX, pinY, pinX, pinY)
-    }
-
-    if (gate.kind === 'INPUT' || gate.kind === 'OUTPUT') {
-      const value = gate.kind === 'INPUT' ? gate.outputValues[0] : gate.inputValues[0]
-      doc.setFont('helvetica', 'bold')
-      doc.setFontSize(Math.max(7, scale * 0.35))
-      doc.setTextColor(17, 17, 17)
-      doc.text(value ? '1' : '0', px, py, { align: 'center', baseline: 'middle' })
-    }
-
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(Math.max(5, scale * 0.16))
-    doc.setTextColor(90, 90, 90)
-    doc.text(def.label, px, py + bounds.halfHeight + scale * 0.22, { align: 'center' })
-  }
-
-  drawLegend(doc, usedKinds, pageW, pageH - MARGIN - LEGEND_SPACE + 4)
   doc.save(filename)
 }
