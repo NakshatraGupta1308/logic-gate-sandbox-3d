@@ -111,7 +111,12 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
     collectCombTargets(proc.elseBody, targets)
     for (const [key, { name, index }] of targets) {
       requireUndefined(name, index)
-      definitionByName.set(key, buildPriorityMuxExpr(key, proc.branches, proc.elseBody))
+      definitionByName.set(
+        key,
+        buildPriorityMuxExpr(key, proc.branches, proc.elseBody, () => {
+          throw missingBranchError(key)
+        }),
+      )
     }
   }
 
@@ -189,6 +194,56 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
     return result
   }
 
+  /** Pads `bits` with leading (MSB-side) zero constants up to `width`; errors if it is already wider, since that value would not fit. */
+  function zeroExtend(bits: Bits, width: number): Bits {
+    if (bits.length === width) return bits
+    if (bits.length > width) {
+      throw new VhdlSemanticError(`A ${bits.length}-bit value does not fit in ${width} bits`)
+    }
+    const padding: Bits = Array.from({ length: width - bits.length }, () => ({ kind: 'const', value: false }))
+    return [...padding, ...bits]
+  }
+
+  /**
+   * A ripple-carry adder/subtractor, one full-adder cell per bit from LSB
+   * to MSB (bit arrays are MSB-first, so iterated in reverse): subtraction
+   * negates the right operand and starts the carry-in at 1, the standard
+   * two's-complement trick already used for the export-side PASCLA-style
+   * circuits this importer can read back in. The final carry-out is
+   * discarded, matching real hardware: a fixed-width counter or adder just
+   * wraps modulo its own width rather than growing another bit.
+   */
+  function resolveAdd(op: '+' | '-', leftBits: Bits, rightBits: Bits): Bits {
+    const width = Math.max(leftBits.length, rightBits.length)
+    const left = zeroExtend(leftBits, width)
+    const rightExtended = zeroExtend(rightBits, width)
+    const right = op === '-' ? rightExtended.map(negate) : rightExtended
+    let carry: Operand = { kind: 'const', value: op === '-' }
+    const resultReversed: Operand[] = []
+    for (let i = width - 1; i >= 0; i--) {
+      const axorb = createGate('XOR', [left[i], right[i]])
+      resultReversed.push(createGate('XOR', [axorb, carry]))
+      carry = createGate('OR', [createGate('AND', [left[i], right[i]]), createGate('AND', [axorb, carry])])
+    }
+    return resultReversed.reverse()
+  }
+
+  /** The minimal-width unsigned binary representation of a non-negative integer literal (e.g. the "1" in "count + 1"); zeroExtend brings it up to match whatever it is combined with. */
+  function intToBits(value: number): Bits {
+    if (!Number.isInteger(value) || value < 0) {
+      throw new VhdlSemanticError(`"${value}" is not a supported integer literal (only non-negative whole numbers are)`)
+    }
+    let width = 1
+    let remaining = Math.floor(value / 2)
+    while (remaining > 0) {
+      width++
+      remaining = Math.floor(remaining / 2)
+    }
+    const bits: Bits = []
+    for (let i = width - 1; i >= 0; i--) bits.push({ kind: 'const', value: Boolean((value >> i) & 1) })
+    return bits
+  }
+
   function evalCompareConst(op: CompareOp, a: boolean, b: boolean): boolean {
     const av = a ? 1 : 0
     const bv = b ? 1 : 0
@@ -241,13 +296,37 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
     }
   }
 
+  /**
+   * Resolves both sides of a mux or comparison, matching a bare integer
+   * literal's width to its sibling's rather than treating the difference
+   * as an error: a literal like the "0" in "count <= 0;" or the "3" in
+   * "count = 3" has no inherent width of its own (unlike a std_logic
+   * literal, which is always written to already match) - it means
+   * whatever width the real signal next to it has. Any other width
+   * mismatch still throws `mismatchMessage`, since that is a genuine bug.
+   */
+  function resolveWidthMatchedPair(aExpr: Expr, bExpr: Expr, mismatchMessage: (aWidth: number, bWidth: number) => string): [Bits, Bits] {
+    if (aExpr.type === 'intlit' && bExpr.type !== 'intlit') {
+      const b = resolveExpr(bExpr)
+      return [zeroExtend(intToBits(aExpr.value), b.length), b]
+    }
+    if (bExpr.type === 'intlit' && aExpr.type !== 'intlit') {
+      const a = resolveExpr(aExpr)
+      return [a, zeroExtend(intToBits(bExpr.value), a.length)]
+    }
+    const a = resolveExpr(aExpr)
+    const b = resolveExpr(bExpr)
+    if (a.length !== b.length) throw new VhdlSemanticError(mismatchMessage(a.length, b.length))
+    return [a, b]
+  }
+
   /** `=` compares vectors bit by bit (AND of per-bit equality); every other relational operator only makes sense between single bits here, since a lexicographic multi-bit ordering isn't implemented. */
   function resolveCompare(op: CompareOp, leftExpr: Expr, rightExpr: Expr): Bits {
-    const left = resolveExpr(leftExpr)
-    const right = resolveExpr(rightExpr)
-    if (left.length !== right.length) {
-      throw new VhdlSemanticError(`Cannot compare values of different widths (${left.length} bits vs ${right.length} bits)`)
-    }
+    const [left, right] = resolveWidthMatchedPair(
+      leftExpr,
+      rightExpr,
+      (a, b) => `Cannot compare values of different widths (${a} bits vs ${b} bits)`,
+    )
     if (op !== '=') {
       if (left.length !== 1) {
         throw new VhdlSemanticError(`"${op}" is only supported between single-bit signals, not multi-bit vectors`)
@@ -279,6 +358,8 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
         return [{ kind: 'const', value: expr.value === '1' }]
       case 'strlit':
         return expr.bits.split('').map((ch) => ({ kind: 'const', value: ch === '1' }))
+      case 'intlit':
+        return intToBits(expr.value)
       case 'ident':
         return resolveName(expr.name)
       case 'indexed':
@@ -295,17 +376,19 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
         }
         return left.map((bit, i) => createGate(BINOP_KIND[expr.op], [bit, right[i]]))
       }
+      case 'add':
+        return resolveAdd(expr.op, resolveExpr(expr.left), resolveExpr(expr.right))
       case 'mux': {
         const selBits = resolveExpr(expr.sel)
         if (selBits.length !== 1) {
           throw new VhdlSemanticError('An if/case condition, or a when/else mux selector, must be a single bit, not a multi-bit vector')
         }
         const sel = selBits[0]
-        const a = resolveExpr(expr.a)
-        const b = resolveExpr(expr.b)
-        if (a.length !== b.length) {
-          throw new VhdlSemanticError(`Cannot choose between values of different widths (${a.length} bits vs ${b.length} bits)`)
-        }
+        const [a, b] = resolveWidthMatchedPair(
+          expr.a,
+          expr.b,
+          (aWidth, bWidth) => `Cannot choose between values of different widths (${aWidth} bits vs ${bWidth} bits)`,
+        )
         return a.map((aBit, i) => createGate('MUX2', [aBit, b[i], sel]))
       }
       case 'compare':
@@ -318,6 +401,8 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
         throw new VhdlSemanticError(
           `"${expr.signal}'event" can only be used (together with a "= '1'" check) as a flip-flop's whole "if" condition, not inside a general expression`,
         )
+      case 'othersFill':
+        throw new VhdlSemanticError('"(others => ...)" can only be used as a whole assignment\'s value, not inside a general expression')
     }
   }
 
@@ -392,7 +477,11 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
     const clkBits = resolveName(proc.clk)
     if (clkBits.length !== 1) throw new VhdlSemanticError(`"${proc.clk}" is used as a clock but is not a single bit`)
     for (const target of targets) {
-      const dBits = resolveExpr(resolveTargetExpr(target, proc.body))
+      // Unlike a combinational process, a clocked one may legitimately leave
+      // a signal untouched on some path (an enable-gated register): that
+      // path just holds the flip-flop's own current output.
+      const dExpr = resolveTargetExpr(target, proc.body, () => ({ type: 'ident', name: target }))
+      const dBits = resolveExpr(dExpr)
       const gates = dffBySignal.get(target)!
       if (dBits.length !== gates.length) {
         throw new VhdlSemanticError(`"${target}" is driven by a value of the wrong width in a clocked process`)
@@ -465,35 +554,43 @@ function collectCombTargets(statements: Statement[], out: Map<string, { name: st
 
 /**
  * Synthesizes the single expression a signal's if/elsif/.../else priority
- * chain reduces to: starting from the final "else" value and wrapping
- * outward through each condition in reverse, so the outermost (and
- * therefore first-checked) mux is the original "if" branch, matching
- * VHDL's top-to-bottom priority. A branch's own body may itself contain a
- * nested if/case (e.g. a synchronous reset inside a clocked process),
- * resolved the same way recursively.
+ * chain reduces to: starting from the final "else" value (or, if there is
+ * none, `onMissing()`) and wrapping outward through each condition in
+ * reverse, so the outermost (and therefore first-checked) mux is the
+ * original "if" branch, matching VHDL's top-to-bottom priority. A branch's
+ * own body may itself contain a nested if/case (e.g. a synchronous reset
+ * inside a clocked process), resolved the same way recursively.
  */
-function buildPriorityMuxExpr(target: string, branches: IfBranch[], elseBody: Statement[]): Expr {
-  let result = resolveTargetExpr(target, elseBody)
+function buildPriorityMuxExpr(target: string, branches: IfBranch[], elseBody: Statement[] | null, onMissing: () => Expr): Expr {
+  let result = elseBody === null ? onMissing() : resolveTargetExpr(target, elseBody, onMissing)
   for (let i = branches.length - 1; i >= 0; i--) {
-    const value = resolveTargetExpr(target, branches[i].body)
+    const value = resolveTargetExpr(target, branches[i].body, onMissing)
     result = { type: 'mux', a: result, b: value, sel: branches[i].cond }
   }
   return result
 }
 
-/** Errors if `target` (a bitKey) is not assigned along every path through `statements`, since a gap would need an inferred latch. */
-function resolveTargetExpr(target: string, statements: Statement[]): Expr {
+/**
+ * Finds the expression that ends up driving `target` (a bitKey) along
+ * every path through `statements`. Where a path does not touch it at all,
+ * falls back to whatever this same statement list already established
+ * earlier (a plain assignment or a prior nested if/case), and only once
+ * that runs out, to `onMissing()` - which a combinational process makes an
+ * error (an inferred latch has no representation here), but a clocked
+ * process instead makes "hold the flip-flop's own current value", exactly
+ * matching a real register-with-enable that a shorter branch leaves alone.
+ */
+function resolveTargetExpr(target: string, statements: Statement[], onMissing: () => Expr): Expr {
   let result: Expr | null = null
   for (const stmt of statements) {
     if (stmt.kind === 'assign') {
       if (bitKey(stmt.target, stmt.targetIndex) === target) result = stmt.expr
       continue
     }
-    if (stmt.elseBody === null) throw missingBranchError(target)
-    result = buildPriorityMuxExpr(target, stmt.branches, stmt.elseBody)
+    const capturedResult = result
+    result = buildPriorityMuxExpr(target, stmt.branches, stmt.elseBody, capturedResult !== null ? () => capturedResult : onMissing)
   }
-  if (!result) throw missingBranchError(target)
-  return result
+  return result ?? onMissing()
 }
 
 function missingBranchError(target: string): VhdlSemanticError {
