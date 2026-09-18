@@ -4,7 +4,7 @@ import { buildGateOutline } from '../export/gateOutline'
 import { GATE_HEIGHT, GATE_WIDTH, PIN_RADIUS, pinPosition, snapToGrid } from '../scene/layout'
 import { useCircuitStore } from '../state/circuitStore'
 import { GATE_Y } from '../state/constants'
-import { pathCommandsToSvg } from './svgPath'
+import { pathCommandsToSvg } from '../export/svgPath'
 
 const HALF_WIDTH = GATE_WIDTH / 2
 const HALF_HEIGHT = GATE_HEIGHT / 2

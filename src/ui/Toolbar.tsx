@@ -71,6 +71,11 @@ export function Toolbar() {
     exportSchematicPdf(gates, wires)
   }
 
+  async function handleExportImage() {
+    const { exportSchematicImage } = await import('../export/exportSchematicImage')
+    await exportSchematicImage(gates, wires)
+  }
+
   function handleExportVhdl() {
     const vhdl = exportVhdl(gates, wires)
     downloadText('circuit.vhd', vhdl)
@@ -203,10 +208,18 @@ export function Toolbar() {
         <button
           type="button"
           onClick={handleExportPdf}
-          title="Save the current circuit as a PDF schematic with standard gate symbols"
+          title="Save the current circuit as a PDF schematic with standard gate symbols (tiled across multiple pages if it does not fit legibly on one)"
           className="comic-btn px-2.5 py-1.5 text-xs font-bold"
         >
           Export PDF
+        </button>
+        <button
+          type="button"
+          onClick={handleExportImage}
+          title="Save the current circuit as a single PNG image, the whole circuit at once at whatever resolution its size needs"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Export PNG
         </button>
         <button
           type="button"
