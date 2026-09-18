@@ -316,6 +316,8 @@ function parseEntity(cursor: Cursor): ParsedEntity {
   while (cursor.peek() && cursor.peek()?.text !== 'end') {
     if (cursor.peek()?.text === 'process') {
       processes.push(parseProcess(cursor))
+    } else if (cursor.peek()?.text === 'with') {
+      assignments.push(parseSelectedAssignment(cursor))
     } else if (cursor.peek()?.kind === 'ident' && cursor.peek(1)?.text === ':') {
       instantiations.push(parseInstantiation(cursor))
     } else {
@@ -376,6 +378,49 @@ function parseInstantiation(cursor: Cursor): ParsedInstantiation {
   return { label, componentName, associations, line }
 }
 
+/**
+ * `with <selector> select <target> <= <value> when <choice>, ... , <value>
+ * when others;` - a concurrent selected signal assignment, VHDL's dataflow-
+ * statement equivalent of a process's `case`/`when` (see parseCaseStatement
+ * for the same desugaring idea). Reduced directly to one ParsedAssignment
+ * whose expr is a chain of muxes, so it needs no support anywhere else in
+ * the builder beyond what a plain concurrent assignment already gets.
+ */
+function parseSelectedAssignment(cursor: Cursor): ParsedAssignment {
+  const line = cursor.peek()?.line ?? 1
+  cursor.eat('with')
+  const selector = parseBinaryChain(cursor)
+  cursor.eat('select')
+  const { target, targetIndex } = parseAssignmentTarget(cursor)
+  cursor.eat('<=')
+
+  const items: { value: Expr; choice: Expr }[] = []
+  let othersValue: Expr | null = null
+  do {
+    const value = parseBinaryChain(cursor)
+    cursor.eat('when')
+    if (cursor.tryEat('others')) {
+      othersValue = value
+    } else {
+      items.push({ value, choice: parseOperand(cursor) })
+    }
+  } while (cursor.tryEat(','))
+  cursor.eat(';')
+
+  if (othersValue === null) {
+    throw new VhdlSyntaxError(
+      'A "with ... select" assignment must end with "... when others" (every possible selector value must produce a result, since an inferred latch is not supported)',
+      line,
+    )
+  }
+
+  let expr: Expr = othersValue
+  for (let i = items.length - 1; i >= 0; i--) {
+    expr = { type: 'mux', a: expr, b: items[i].value, sel: { type: 'compare', op: '=', left: selector, right: items[i].choice } }
+  }
+  return { target, targetIndex, expr, line }
+}
+
 /** One or more comma-separated identifiers sharing a single declaration. */
 function parseIdentList(cursor: Cursor): string[] {
   const names = [cursor.eatIdent()]
@@ -390,6 +435,59 @@ function parseIntLiteral(cursor: Cursor): number {
   }
   cursor.next()
   return Number(token.text)
+}
+
+const HEX_DIGIT_BITS: Record<string, string> = {
+  '0': '0000',
+  '1': '0001',
+  '2': '0010',
+  '3': '0011',
+  '4': '0100',
+  '5': '0101',
+  '6': '0110',
+  '7': '0111',
+  '8': '1000',
+  '9': '1001',
+  a: '1010',
+  b: '1011',
+  c: '1100',
+  d: '1101',
+  e: '1110',
+  f: '1111',
+}
+
+/** Expands a X"..." literal's hex digits into 4 bits each. */
+function hexStringToBits(raw: string, line: number): string {
+  return raw
+    .toLowerCase()
+    .split('')
+    .map((digit) => {
+      const bits = HEX_DIGIT_BITS[digit]
+      if (!bits) throw new VhdlSyntaxError(`"${digit}" is not a valid hex digit in a X"..." literal`, line)
+      return bits
+    })
+    .join('')
+}
+
+/**
+ * A plain bit-string literal can use any std_ulogic character, not just
+ * '0'/'1' - 'H'/'L' are weak versions of 1/0, and 'U'/'X'/'Z'/'W'/'-' are
+ * all varieties of "unknown" with no equivalent in this simulator's
+ * two-valued model, so they are approximated as 0 (documented here rather
+ * than silently, since a design that actually depends on tri-state or
+ * unknown propagation will not behave the same way).
+ */
+function normalizeBitString(raw: string, line: number): string {
+  return raw
+    .toLowerCase()
+    .split('')
+    .map((ch) => {
+      if (ch === '1' || ch === 'h') return '1'
+      if (ch === '0' || ch === 'l') return '0'
+      if (ch === 'u' || ch === 'x' || ch === 'z' || ch === 'w' || ch === '-') return '0'
+      throw new VhdlSyntaxError(`"${ch}" is not a valid bit-string character`, line)
+    })
+    .join('')
 }
 
 function parseType(cursor: Cursor, ownerName: string): VhdlType {
@@ -631,7 +729,15 @@ function parseOperand(cursor: Cursor): Expr {
   }
   if (token?.kind === 'strlit') {
     cursor.next()
-    return { type: 'strlit', bits: token.text }
+    return { type: 'strlit', bits: normalizeBitString(token.text, token.line) }
+  }
+  // A hex literal (X"e") tokenizes as the identifier "x" immediately
+  // followed by a string token; a bare identifier named "x" is never
+  // itself followed directly by a quoted string, so this is unambiguous.
+  if (token?.text === 'x' && cursor.peek(1)?.kind === 'strlit') {
+    cursor.next()
+    const strToken = cursor.next()
+    return { type: 'strlit', bits: hexStringToBits(strToken.text, strToken.line) }
   }
   const name = cursor.eatIdent()
   if (cursor.tryEat("'")) {
