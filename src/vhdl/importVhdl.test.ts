@@ -1126,3 +1126,362 @@ describe('importVhdl: a real-world hand-written sequential file (Moore/Mealy sta
     expect(actualZ).toEqual(expectedZ)
   })
 })
+
+describe('importVhdl: structural component instantiation', () => {
+  it('inlines a component instantiated by positional port map', () => {
+    const vhdl = `
+      entity sub is
+        port (x : in std_logic; y : in std_logic; z : out std_logic);
+      end sub;
+      architecture rtl of sub is
+      begin
+        z <= x and y;
+      end rtl;
+
+      entity top is
+        port (p : in std_logic; q : in std_logic; r : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: sub port map (p, q, r);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTable(result.circuit)).toEqual([[false], [false], [false], [true]])
+  })
+
+  it('inlines a component instantiated by named port map, in any association order', () => {
+    const vhdl = `
+      entity sub is
+        port (x : in std_logic; y : in std_logic; z : out std_logic);
+      end sub;
+      architecture rtl of sub is
+      begin
+        z <= x and y;
+      end rtl;
+
+      entity top is
+        port (p : in std_logic; q : in std_logic; r : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: sub port map (x => p, z => r, y => q);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTable(result.circuit)).toEqual([[false], [false], [false], [true]])
+  })
+
+  it('gives each instance of the same component its own independent internal state', () => {
+    const vhdl = `
+      entity inv is
+        port (x : in std_logic; y : out std_logic);
+      end inv;
+      architecture rtl of inv is
+      begin
+        y <= not x;
+      end rtl;
+
+      entity top is
+        port (a : in std_logic; b : out std_logic; c : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: inv port map (a, b);
+        u2: inv port map (b, c);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // b = not a, c = not b = a: two independent inverter instances chained,
+    // not one shared gate aliasing both instantiations' internals.
+    expect(truthTable(result.circuit)).toEqual([
+      [true, false],
+      [false, true],
+    ])
+  })
+
+  it('treats an inout port as an ordinary output', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : inout std_logic);
+      end t;
+      architecture rtl of t is
+      begin
+        y <= a;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTable(result.circuit)).toEqual([[false], [true]])
+  })
+
+  it('reproduces a 4-bit carry-lookahead adder/subtractor built from four instantiated full-adder cells (PASCLA-style)', () => {
+    const vhdl = `
+      library IEEE;
+      use IEEE.STD_LOGIC_1164.ALL;
+
+      entity PFA is
+      Port ( A : in STD_LOGIC;
+             B : in STD_LOGIC;
+             Cin : in STD_LOGIC;
+             S : out STD_LOGIC;
+             P : out STD_LOGIC;
+             G : out STD_LOGIC);
+      end PFA;
+
+      architecture Behavioral of PFA is
+      begin
+        S <= A xor B xor Cin;
+        P <= A xor B;
+        G <= A and B;
+      end Behavioral;
+
+      library IEEE;
+      use IEEE.STD_LOGIC_1164.ALL;
+
+      entity PASCLA is
+      Port ( A : in STD_LOGIC_VECTOR (3 downto 0);
+             B : in STD_LOGIC_VECTOR (3 downto 0);
+             Cin : in STD_LOGIC;
+             S : out STD_LOGIC_VECTOR (3 downto 0);
+             Overflo: OUT STD_LOGIC ;
+             Cout : inout STD_LOGIC);
+      end PASCLA;
+
+      architecture Behavioral of PASCLA is
+      component PFA is
+      Port ( A : in STD_LOGIC;
+             B : in STD_LOGIC;
+             Cin : in STD_LOGIC;
+             S : out STD_LOGIC;
+             P : out STD_LOGIC;
+             G : out STD_LOGIC);
+      end component;
+      signal c1,c2,c3,c4: STD_LOGIC;
+      signal p,g,ip: STD_LOGIC_VECTOR(3 downto 0);
+      begin
+      ip(0)<= b(0) xor cin;
+      ip(1)<= b(1) xor cin;
+      ip(2)<= b(2) xor cin;
+      ip(3)<= b(3) xor cin;
+
+      U1: PFA port map( a(0), ip(0), cin, S(0), p(0), g(0));
+      U2: PFA port map( a(1), ip(1), c1, S(1), p(1), g(1));
+      U3: PFA port map( a(2), ip(2), c2, S(2), p(2), g(2));
+      U4: PFA port map( a(3), ip(3), c3, S(3), p(3), g(3));
+
+      c1 <= g(0) or (p(0) and cin);
+      c2 <= g(1) or (p(1) and c1);
+      c3 <= g(2) or (p(2) and c2);
+      c4 <= g(3) or (p(3) and c3);
+      overflo <= c3 xor c4;
+      cout<=c4;
+      end behavioral;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+
+    const inputs = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const [a3, a2, a1, a0, b3, b2, b1, b0, cin] = inputs
+    const outputs = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    const [s3, s2, s1, s0] = outputs
+
+    function setBit(gate: Gate, value: boolean) {
+      if (gate.outputValues[0] !== value) circuit.toggleInput(gate.id)
+    }
+    function toBits(n: number): string {
+      return n.toString(2).padStart(4, '0')
+    }
+    function add(aVal: number, bVal: number, cinVal: 0 | 1): number {
+      const aBits = toBits(aVal)
+      const bBits = toBits(bVal)
+      ;[a3, a2, a1, a0].forEach((gate, i) => setBit(gate, aBits[i] === '1'))
+      ;[b3, b2, b1, b0].forEach((gate, i) => setBit(gate, bBits[i] === '1'))
+      setBit(cin, cinVal === 1)
+      simulate(circuit)
+      return parseInt([s3, s2, s1, s0].map((gate) => (gate.inputValues[0] ? '1' : '0')).join(''), 2)
+    }
+
+    // cin=0: plain addition mod 16.
+    expect(add(0, 5, 0)).toBe(5)
+    expect(add(15, 13, 0)).toBe(12) // 28 mod 16
+    expect(add(11, 11, 0)).toBe(6) // 22 mod 16
+
+    // cin=1: b(i) xor cin inverts B, and cin also feeds the LSB carry-in,
+    // giving two's-complement subtraction A - B mod 16.
+    expect(add(11, 10, 1)).toBe(1)
+    expect(add(0, 15, 1)).toBe(1) // 0 - 15 = -15 = 1 mod 16
+    expect(add(2, 1, 1)).toBe(1)
+  })
+
+  it('rejects a component with no matching entity/architecture anywhere in the file', () => {
+    const vhdl = `
+      entity top is
+        port (a : in std_logic; y : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: missing_thing port map (a, y);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('missing_thing')
+    expect(result.error).toContain('no matching entity')
+  })
+
+  it('rejects a positional port map with the wrong number of connections', () => {
+    const vhdl = `
+      entity sub is
+        port (x : in std_logic; y : in std_logic; z : out std_logic);
+      end sub;
+      architecture rtl of sub is
+      begin
+        z <= x and y;
+      end rtl;
+
+      entity top is
+        port (a : in std_logic; b : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: sub port map (a, b);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('u1')
+  })
+
+  it('rejects mixing named and positional associations in one instantiation', () => {
+    const vhdl = `
+      entity sub is
+        port (x : in std_logic; y : in std_logic; z : out std_logic);
+      end sub;
+      architecture rtl of sub is
+      begin
+        z <= x and y;
+      end rtl;
+
+      entity top is
+        port (a : in std_logic; b : in std_logic; c : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: sub port map (a, y => b, z => c);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('mixes named')
+  })
+
+  it('rejects a lone entity that only ever instantiates itself (no valid top-level candidate)', () => {
+    const vhdl = `
+      entity loopy is
+        port (a : in std_logic; y : out std_logic);
+      end loopy;
+      architecture rtl of loopy is
+      begin
+        u1: loopy port map (a, y);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('top-level')
+  })
+
+  it('rejects an indirect instantiation cycle reachable from a valid top-level entity', () => {
+    const vhdl = `
+      entity a is
+        port (x : in std_logic; y : out std_logic);
+      end a;
+      architecture rtl of a is
+      begin
+        u1: b port map (x, y);
+      end rtl;
+
+      entity b is
+        port (x : in std_logic; y : out std_logic);
+      end b;
+      architecture rtl of b is
+      begin
+        u1: a port map (x, y);
+      end rtl;
+
+      entity top is
+        port (p : in std_logic; q : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: a port map (p, q);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('itself')
+  })
+
+  it('rejects a duplicate instance label', () => {
+    const vhdl = `
+      entity sub is
+        port (x : in std_logic; y : out std_logic);
+      end sub;
+      architecture rtl of sub is
+      begin
+        y <= not x;
+      end rtl;
+
+      entity top is
+        port (a : in std_logic; b : out std_logic);
+      end top;
+      architecture rtl of top is
+      begin
+        u1: sub port map (a, b);
+        u1: sub port map (a, b);
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('u1')
+  })
+
+  it('rejects a file where no entity is unambiguously the top-level design', () => {
+    const vhdl = `
+      entity a is
+        port (x : in std_logic; y : out std_logic);
+      end a;
+      architecture rtl of a is
+      begin
+        y <= x;
+      end rtl;
+
+      entity b is
+        port (x : in std_logic; y : out std_logic);
+      end b;
+      architecture rtl of b is
+      begin
+        y <= x;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('top-level')
+  })
+})
