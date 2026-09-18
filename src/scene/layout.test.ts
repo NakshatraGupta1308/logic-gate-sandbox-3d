@@ -14,12 +14,21 @@ describe('computeSceneExtent', () => {
   it('grows to fit a gate placed far from the origin, with padding', () => {
     const circuit = new Circuit()
     circuit.addGate('AND', [20, 0.4, 0])
-    expect(computeSceneExtent(circuit.getGates())).toBe(23)
+    expect(computeSceneExtent(circuit.getGates())).toBe(30)
   })
 
   it('considers both axes independently', () => {
     const circuit = new Circuit()
     circuit.addGate('AND', [0, 0.4, -30])
-    expect(computeSceneExtent(circuit.getGates())).toBe(33)
+    expect(computeSceneExtent(circuit.getGates())).toBe(45)
+  })
+
+  it('scales padding with circuit size instead of a small fixed margin', () => {
+    // A fixed +3 margin left almost no room to pull the 3D camera back
+    // past a gate near the edge of a big circuit; padding should grow
+    // proportionally so there is always comfortable room to frame it.
+    const circuit = new Circuit()
+    circuit.addGate('AND', [100, 0.4, 0])
+    expect(computeSceneExtent(circuit.getGates())).toBe(150)
   })
 })

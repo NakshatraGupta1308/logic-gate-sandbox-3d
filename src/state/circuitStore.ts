@@ -37,6 +37,9 @@ interface CircuitState {
   placingKind: GateKind | null
   selectedGateId: string | null
   selectedWireId: string | null
+  /** Set by selectAll (Ctrl/Cmd+A): every gate/wire, for a group move. */
+  selectedGateIds: string[]
+  selectedWireIds: string[]
 
   /** Output pin a wire drag started from, if any. */
   pendingWireFrom: PinHandle | null
@@ -61,6 +64,7 @@ interface CircuitState {
   placeGate: (kind: GateKind, position: Vec3) => void
   removeGate: (id: string) => void
   moveGate: (id: string, position: Vec3) => void
+  moveGatesBatch: (moves: { id: string; position: Vec3 }[]) => void
   toggleInput: (id: string) => void
   setInteracting: (value: boolean) => void
 
@@ -72,6 +76,7 @@ interface CircuitState {
   removeWire: (id: string) => void
 
   select: (selection: { gateId?: string | null; wireId?: string | null }) => void
+  selectAll: () => void
   deleteSelected: () => void
   copySelected: () => void
   cutSelected: () => void
@@ -200,6 +205,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   placingKind: null,
   selectedGateId: null,
   selectedWireId: null,
+  selectedGateIds: [],
+  selectedWireIds: [],
 
   pendingWireFrom: null,
   dragPoint: null,
@@ -231,6 +238,7 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     set({
       ...refresh(circuit),
       selectedGateId: get().selectedGateId === id ? null : get().selectedGateId,
+      selectedGateIds: get().selectedGateIds.filter((gid) => gid !== id),
     })
   },
 
@@ -240,6 +248,14 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
   moveGate: (id, position) => {
     const { circuit } = get()
     circuit.moveGate(id, position)
+    set(refresh(circuit))
+  },
+
+  // Same one-history-entry-per-drag contract as moveGate, for a whole
+  // selected group dragged together (see selectAll / Ctrl+A).
+  moveGatesBatch: (moves) => {
+    const { circuit } = get()
+    for (const { id, position } of moves) circuit.moveGate(id, position)
     set(refresh(circuit))
   },
 
@@ -280,6 +296,7 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     set({
       ...refresh(circuit),
       selectedWireId: get().selectedWireId === id ? null : get().selectedWireId,
+      selectedWireIds: get().selectedWireIds.filter((wid) => wid !== id),
     })
   },
 
@@ -287,10 +304,37 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     set({
       selectedGateId: selection.gateId ?? null,
       selectedWireId: selection.wireId ?? null,
+      // A plain single-selection replaces whatever group Ctrl+A selected.
+      selectedGateIds: [],
+      selectedWireIds: [],
     }),
 
+  selectAll: () => {
+    const { gates, wires } = get()
+    set({
+      selectedGateId: null,
+      selectedWireId: null,
+      selectedGateIds: gates.map((g) => g.id),
+      selectedWireIds: wires.map((w) => w.id),
+    })
+  },
+
   deleteSelected: () => {
-    const { selectedGateId, selectedWireId, removeGate, removeWire } = get()
+    const { selectedGateId, selectedWireId, selectedGateIds, selectedWireIds, circuit, pushHistory } = get()
+    if (selectedGateIds.length > 0 || selectedWireIds.length > 0) {
+      pushHistory()
+      for (const id of selectedWireIds) circuit.removeWire(id)
+      for (const id of selectedGateIds) circuit.removeGate(id)
+      set({
+        ...refresh(circuit),
+        selectedGateIds: [],
+        selectedWireIds: [],
+        selectedGateId: null,
+        selectedWireId: null,
+      })
+      return
+    }
+    const { removeGate, removeWire } = get()
     if (selectedGateId) removeGate(selectedGateId)
     if (selectedWireId) removeWire(selectedWireId)
   },
@@ -329,6 +373,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
       pasteCount: nextCount,
       selectedGateId: gate.id,
       selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
     })
   },
 
@@ -336,7 +382,13 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     const { circuit, pushHistory } = get()
     pushHistory()
     circuit.clear()
-    set({ ...refresh(circuit), selectedGateId: null, selectedWireId: null })
+    set({
+      ...refresh(circuit),
+      selectedGateId: null,
+      selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
+    })
   },
 
   loadPreset: (name) => {
@@ -347,6 +399,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
       ...refresh(circuit),
       selectedGateId: null,
       selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
       placingKind: null,
       statusMessage: `Loaded ${PRESETS[name].label}.`,
     })
@@ -380,6 +434,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
         ...refresh(circuit),
         selectedGateId: null,
         selectedWireId: null,
+        selectedGateIds: [],
+        selectedWireIds: [],
         statusMessage: 'Circuit loaded.',
       })
     } catch {
@@ -400,6 +456,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
       ...refresh(result.circuit),
       selectedGateId: null,
       selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
       placingKind: null,
       statusMessage: 'VHDL file imported.',
       // An imported circuit's size has nothing to do with whatever was
@@ -427,6 +485,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
       future: [...future, current].slice(-MAX_HISTORY),
       selectedGateId: null,
       selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
     })
   },
 
@@ -443,6 +503,8 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
       future: future.slice(0, -1),
       selectedGateId: null,
       selectedWireId: null,
+      selectedGateIds: [],
+      selectedWireIds: [],
     })
   },
 }))

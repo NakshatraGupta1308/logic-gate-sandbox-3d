@@ -1,5 +1,5 @@
 import { memo, useRef } from 'react'
-import { getGateDef, type Gate } from '../engine'
+import { getGateDef, type Gate, type Vec3 } from '../engine'
 import { buildGateOutline } from '../export/gateOutline'
 import { GATE_HEIGHT, GATE_WIDTH, PIN_RADIUS, pinPosition, snapToGrid } from '../scene/layout'
 import { useCircuitStore } from '../state/circuitStore'
@@ -23,11 +23,13 @@ interface GateSymbol2DProps {
 function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
   const def = getGateDef(gate.kind)
   const selectedGateId = useCircuitStore((s) => s.selectedGateId)
+  const selectedGateIds = useCircuitStore((s) => s.selectedGateIds)
   const pendingWireFrom = useCircuitStore((s) => s.pendingWireFrom)
   const hoveredPin = useCircuitStore((s) => s.hoveredPin)
   const circuit = useCircuitStore((s) => s.circuit)
   const select = useCircuitStore((s) => s.select)
   const moveGate = useCircuitStore((s) => s.moveGate)
+  const moveGatesBatch = useCircuitStore((s) => s.moveGatesBatch)
   const toggleInput = useCircuitStore((s) => s.toggleInput)
   const setInteracting = useCircuitStore((s) => s.setInteracting)
   const beginWireDrag = useCircuitStore((s) => s.beginWireDrag)
@@ -35,11 +37,13 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
   const completeWireDrag = useCircuitStore((s) => s.completeWireDrag)
   const pushHistory = useCircuitStore((s) => s.pushHistory)
 
-  const isSelected = selectedGateId === gate.id
+  const isGroupSelected = selectedGateIds.length > 1 && selectedGateIds.includes(gate.id)
+  const isSelected = selectedGateId === gate.id || isGroupSelected
   const isDragging = useRef(false)
   const dragMoved = useRef(false)
   const dragStartWorld = useRef({ x: 0, z: 0 })
   const dragStartGatePos = useRef({ x: 0, z: 0 })
+  const groupStartPositions = useRef<Map<string, Vec3>>(new Map())
 
   const [cx, , cz] = gate.position
   const outline = buildGateOutline(gate.kind, { cx, cy: cz, halfWidth: HALF_WIDTH, halfHeight: HALF_HEIGHT })
@@ -63,6 +67,15 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
     dragMoved.current = false
     dragStartWorld.current = clientToWorld(e.clientX, e.clientY)
     dragStartGatePos.current = { x: gate.position[0], z: gate.position[2] }
+    if (isGroupSelected) {
+      const { gates, selectedGateIds: ids } = useCircuitStore.getState()
+      const starts = new Map<string, Vec3>()
+      for (const id of ids) {
+        const g = gates.find((candidate) => candidate.id === id)
+        if (g) starts.set(id, g.position)
+      }
+      groupStartPositions.current = starts
+    }
     setInteracting(true)
   }
 
@@ -76,11 +89,19 @@ function GateSymbol2DComponent({ gate, clientToWorld }: GateSymbol2DProps) {
       dragMoved.current = true
     }
     if (!dragMoved.current) return
-    moveGate(gate.id, [
-      snapToGrid(dragStartGatePos.current.x + dx),
-      GATE_Y,
-      snapToGrid(dragStartGatePos.current.z + dz),
-    ])
+    if (isGroupSelected && groupStartPositions.current.size > 0) {
+      const moves = Array.from(groupStartPositions.current.entries()).map(([id, position]) => ({
+        id,
+        position: [snapToGrid(position[0] + dx), GATE_Y, snapToGrid(position[2] + dz)] as Vec3,
+      }))
+      moveGatesBatch(moves)
+    } else {
+      moveGate(gate.id, [
+        snapToGrid(dragStartGatePos.current.x + dx),
+        GATE_Y,
+        snapToGrid(dragStartGatePos.current.z + dz),
+      ])
+    }
   }
 
   function handlePointerUp(e: React.PointerEvent) {

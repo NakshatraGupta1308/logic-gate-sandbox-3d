@@ -18,10 +18,11 @@ function elbowPath(x1: number, y1: number, x2: number, y2: number): string {
 
 function Wire2DComponent({ wire, fromGate, toGate }: Wire2DProps) {
   const selectedWireId = useCircuitStore((s) => s.selectedWireId)
+  const selectedWireIds = useCircuitStore((s) => s.selectedWireIds)
   const select = useCircuitStore((s) => s.select)
   const removeWire = useCircuitStore((s) => s.removeWire)
 
-  const isSelected = selectedWireId === wire.id
+  const isSelected = selectedWireId === wire.id || selectedWireIds.includes(wire.id)
   const active = fromGate.outputValues[wire.from.pin] ?? false
 
   const [x1, , z1] = pinPosition(fromGate, true, wire.from.pin)

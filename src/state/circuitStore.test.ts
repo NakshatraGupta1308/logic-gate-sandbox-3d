@@ -98,6 +98,74 @@ describe('undo/redo', () => {
   })
 })
 
+describe('selectAll / group move', () => {
+  it('selects every gate and wire, replacing any single selection', () => {
+    useCircuitStore.getState().placeGate('INPUT', [-2, 0.4, 0])
+    useCircuitStore.getState().placeGate('OUTPUT', [2, 0.4, 0])
+    const [input, output] = useCircuitStore.getState().gates
+    useCircuitStore.setState({ pendingWireFrom: { gateId: input.id, pin: 0, isOutput: true } })
+    useCircuitStore.getState().completeWireDrag({ gateId: output.id, pin: 0, isOutput: false })
+    useCircuitStore.getState().select({ gateId: input.id })
+
+    useCircuitStore.getState().selectAll()
+
+    const state = useCircuitStore.getState()
+    expect(state.selectedGateId).toBeNull()
+    expect(state.selectedWireId).toBeNull()
+    expect(state.selectedGateIds.sort()).toEqual([input.id, output.id].sort())
+    expect(state.selectedWireIds).toHaveLength(1)
+  })
+
+  it('a plain single selection clears a previous select-all group', () => {
+    useCircuitStore.getState().placeGate('AND', [0, 0.4, 0])
+    const id = useCircuitStore.getState().gates[0].id
+    useCircuitStore.getState().selectAll()
+    expect(useCircuitStore.getState().selectedGateIds).toEqual([id])
+
+    useCircuitStore.getState().select({ gateId: id })
+    expect(useCircuitStore.getState().selectedGateIds).toEqual([])
+  })
+
+  it('moveGatesBatch moves every gate in the batch, without recording history itself', () => {
+    useCircuitStore.getState().placeGate('AND', [0, 0.4, 0])
+    useCircuitStore.getState().placeGate('OR', [2, 0.4, 2])
+    const [a, b] = useCircuitStore.getState().gates
+    const pastBefore = useCircuitStore.getState().past.length
+
+    useCircuitStore.getState().moveGatesBatch([
+      { id: a.id, position: [1, 0.4, 1] },
+      { id: b.id, position: [3, 0.4, 3] },
+    ])
+
+    const state = useCircuitStore.getState()
+    expect(state.gates.find((g) => g.id === a.id)?.position).toEqual([1, 0.4, 1])
+    expect(state.gates.find((g) => g.id === b.id)?.position).toEqual([3, 0.4, 3])
+    expect(state.past.length).toBe(pastBefore)
+  })
+
+  it('deleteSelected removes a whole select-all group in one undo step', () => {
+    useCircuitStore.getState().placeGate('INPUT', [-2, 0.4, 0])
+    useCircuitStore.getState().placeGate('OUTPUT', [2, 0.4, 0])
+    const [input, output] = useCircuitStore.getState().gates
+    useCircuitStore.setState({ pendingWireFrom: { gateId: input.id, pin: 0, isOutput: true } })
+    useCircuitStore.getState().completeWireDrag({ gateId: output.id, pin: 0, isOutput: false })
+    const pastBefore = useCircuitStore.getState().past.length
+
+    useCircuitStore.getState().selectAll()
+    useCircuitStore.getState().deleteSelected()
+
+    const state = useCircuitStore.getState()
+    expect(state.gates).toHaveLength(0)
+    expect(state.wires).toHaveLength(0)
+    expect(state.selectedGateIds).toEqual([])
+    expect(state.past.length).toBe(pastBefore + 1)
+
+    useCircuitStore.getState().undo()
+    expect(useCircuitStore.getState().gates).toHaveLength(2)
+    expect(useCircuitStore.getState().wires).toHaveLength(1)
+  })
+})
+
 describe('viewMode', () => {
   it('defaults to 3d and switches to 2d and back without touching the circuit', () => {
     expect(useCircuitStore.getState().viewMode).toBe('3d')

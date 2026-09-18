@@ -85,11 +85,15 @@ function CameraRig() {
       ref={controlsRef}
       enabled={!isInteracting}
       makeDefault
+      enablePan
+      panSpeed={1.5}
       minDistance={2}
       // Kept at most boxHalfSize: a point within that radius of the origin
       // can never have any single coordinate exceed it either, so this
       // guarantees the camera can approach a wall but never end up outside
-      // the box looking back in.
+      // the box looking back in. computeSceneExtent's padding now scales
+      // with the circuit's size, so this still leaves real room to frame a
+      // gate near the edge of a big circuit instead of stopping right at it.
       maxDistance={boxHalfSize}
       maxPolarAngle={Math.PI / 2 - 0.02}
     />

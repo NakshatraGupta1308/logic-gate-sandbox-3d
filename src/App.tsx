@@ -31,6 +31,7 @@ function App() {
   const copySelected = useCircuitStore((s) => s.copySelected)
   const cutSelected = useCircuitStore((s) => s.cutSelected)
   const pasteClipboard = useCircuitStore((s) => s.pasteClipboard)
+  const selectAll = useCircuitStore((s) => s.selectAll)
   const undo = useCircuitStore((s) => s.undo)
   const redo = useCircuitStore((s) => s.redo)
 
@@ -42,6 +43,11 @@ function App() {
       const withModifier = e.metaKey || e.ctrlKey
       const key = e.key.toLowerCase()
 
+      if (withModifier && key === 'a') {
+        e.preventDefault()
+        selectAll()
+        return
+      }
       if (withModifier && key === 'c') {
         e.preventDefault()
         copySelected()
@@ -84,7 +90,7 @@ function App() {
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [deleteSelected, cancelWireDrag, copySelected, cutSelected, pasteClipboard, undo, redo])
+  }, [deleteSelected, cancelWireDrag, copySelected, cutSelected, pasteClipboard, selectAll, undo, redo])
 
   if (!started) {
     return <StartScreen onStart={() => setStarted(true)} />
