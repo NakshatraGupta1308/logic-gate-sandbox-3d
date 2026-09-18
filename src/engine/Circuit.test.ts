@@ -94,4 +94,30 @@ describe('Circuit', () => {
     circuit.toggleInput(input.id)
     expect(circuit.getGate(input.id)?.outputValues[0]).toBe(false)
   })
+
+  it('allows feedback through a sequential gate (register pattern)', () => {
+    const circuit = new Circuit()
+    const dff = circuit.addGate('DFF')
+    const not = circuit.addGate('NOT')
+
+    // Q -> NOT -> D: the classic toggle-flip-flop feedback loop. This must
+    // stay allowed since the DFF only latches on a clock edge, so it is
+    // not an instantaneous combinational cycle.
+    circuit.addWire({ gateId: dff.id, pin: 0 }, { gateId: not.id, pin: 0 })
+    const feedback = circuit.addWire({ gateId: not.id, pin: 0 }, { gateId: dff.id, pin: 0 })
+
+    expect(feedback).toEqual({ ok: true, wire: expect.any(Object) })
+  })
+
+  it('still rejects a purely combinational cycle even when a DFF is elsewhere in the circuit', () => {
+    const circuit = new Circuit()
+    circuit.addGate('DFF')
+    const not1 = circuit.addGate('NOT')
+    const not2 = circuit.addGate('NOT')
+
+    circuit.addWire({ gateId: not1.id, pin: 0 }, { gateId: not2.id, pin: 0 })
+    const loop = circuit.addWire({ gateId: not2.id, pin: 0 }, { gateId: not1.id, pin: 0 })
+
+    expect(loop).toEqual({ ok: false, reason: 'would-cycle' })
+  })
 })

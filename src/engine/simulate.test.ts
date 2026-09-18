@@ -110,4 +110,89 @@ describe('simulate', () => {
     expect(circuit.getGate(not1.id)?.outputValues[0]).toBe(false)
     expect(circuit.getGate(not2.id)?.outputValues[0]).toBe(true)
   })
+
+  it('passes a value straight through a BUFFER', () => {
+    const circuit = new Circuit()
+    const input = circuit.addGate('INPUT')
+    const buffer = circuit.addGate('BUFFER')
+    connect(circuit, input.id, buffer.id)
+
+    simulate(circuit)
+    expect(circuit.getGate(buffer.id)?.outputValues[0]).toBe(false)
+
+    circuit.toggleInput(input.id)
+    simulate(circuit)
+    expect(circuit.getGate(buffer.id)?.outputValues[0]).toBe(true)
+  })
+
+  it('MUX2 selects A when select is low and B when select is high', () => {
+    const circuit = new Circuit()
+    const a = circuit.addGate('INPUT')
+    const b = circuit.addGate('INPUT')
+    const sel = circuit.addGate('INPUT')
+    const mux = circuit.addGate('MUX2')
+    connect(circuit, a.id, mux.id, 0)
+    connect(circuit, b.id, mux.id, 1)
+    connect(circuit, sel.id, mux.id, 2)
+    circuit.toggleInput(a.id) // a = true, b = false, sel = false
+
+    simulate(circuit)
+    expect(circuit.getGate(mux.id)?.outputValues[0]).toBe(true)
+
+    circuit.toggleInput(sel.id)
+    simulate(circuit)
+    expect(circuit.getGate(mux.id)?.outputValues[0]).toBe(false)
+  })
+
+  it('DFF only latches D into Q on a rising clock edge, and holds otherwise', () => {
+    const circuit = new Circuit()
+    const d = circuit.addGate('INPUT')
+    const clk = circuit.addGate('INPUT')
+    const dff = circuit.addGate('DFF')
+    connect(circuit, d.id, dff.id, 0)
+    connect(circuit, clk.id, dff.id, 1)
+
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues).toEqual([false, true])
+
+    // Raising D alone, with the clock still low, must not latch.
+    circuit.toggleInput(d.id)
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues).toEqual([false, true])
+
+    // Rising clock edge latches the current D.
+    circuit.toggleInput(clk.id)
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues).toEqual([true, false])
+
+    // Changing D while the clock stays high must not re-latch.
+    circuit.toggleInput(d.id)
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues).toEqual([true, false])
+  })
+
+  it('a NOT fed back from Q to D toggles the DFF on every rising edge', () => {
+    const circuit = new Circuit()
+    const clk = circuit.addGate('INPUT')
+    const dff = circuit.addGate('DFF')
+    const not = circuit.addGate('NOT')
+    connect(circuit, dff.id, not.id, 0)
+    connect(circuit, not.id, dff.id, 0)
+    connect(circuit, clk.id, dff.id, 1)
+
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues[0]).toBe(false)
+
+    circuit.toggleInput(clk.id) // rising edge: latches NOT(false) = true
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues[0]).toBe(true)
+
+    circuit.toggleInput(clk.id) // falling edge: no change
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues[0]).toBe(true)
+
+    circuit.toggleInput(clk.id) // rising edge: latches NOT(true) = false
+    simulate(circuit)
+    expect(circuit.getGate(dff.id)?.outputValues[0]).toBe(false)
+  })
 })
