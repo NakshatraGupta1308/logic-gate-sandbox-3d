@@ -142,7 +142,13 @@ function GateMeshComponent({ gate }: GateMeshProps) {
         </RoundedBox>
       </group>
 
-      <Html position={[0, GATE_HEIGHT / 2 + 0.34, 0]} center distanceFactor={8} occlude>
+      {/* No `occlude`: with occlude={true}, drei raycasts against the
+          whole scene on every camera move to decide visibility, which is
+          O(gate count) per label and O(gate count squared) in total since
+          every gate has one of these - catastrophic once a circuit has more
+          than a few dozen gates. The label floating just above its own gate
+          is worth showing unconditionally in exchange for staying smooth. */}
+      <Html position={[0, GATE_HEIGHT / 2 + 0.34, 0]} center distanceFactor={8}>
         <div className="pointer-events-none flex select-none flex-col items-center">
           <div className="rounded-md border-2 border-black bg-white px-1.5 py-0.5 text-center leading-none shadow-[2px_2px_0_#000]">
             <span className="text-base font-extrabold">{GATE_SYMBOL[gate.kind]}</span>
