@@ -3,7 +3,20 @@ import type { GateKind } from '../engine'
 import { buildGateOutline, type SymbolBounds } from './gateOutline'
 
 const BOUNDS: SymbolBounds = { cx: 10, cy: 5, halfWidth: 0.7, halfHeight: 0.4 }
-const ALL_KINDS: GateKind[] = ['INPUT', 'OUTPUT', 'AND', 'OR', 'NOT', 'XOR', 'NAND', 'NOR', 'XNOR']
+const ALL_KINDS: GateKind[] = [
+  'INPUT',
+  'OUTPUT',
+  'AND',
+  'OR',
+  'NOT',
+  'XOR',
+  'NAND',
+  'NOR',
+  'XNOR',
+  'BUFFER',
+  'MUX2',
+  'DFF',
+]
 
 describe('buildGateOutline', () => {
   it('gives every gate kind a non-empty, closed body path', () => {

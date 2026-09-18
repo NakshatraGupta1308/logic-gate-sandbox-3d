@@ -103,6 +103,19 @@ function triangleBody({ cx, cy, halfWidth: bw, halfHeight: bh }: SymbolBounds): 
   ]
 }
 
+/** Trapezoid used for the 2-to-1 multiplexer: flat back, narrower flat front. */
+function muxBody({ cx, cy, halfWidth: bw, halfHeight: bh }: SymbolBounds): PathCommand[] {
+  const frontX = cx + bw * 0.5
+  const frontHalfHeight = bh * 0.55
+  return [
+    { op: 'M', x: cx - bw, y: cy - bh },
+    { op: 'L', x: frontX, y: cy - frontHalfHeight },
+    { op: 'L', x: frontX, y: cy + frontHalfHeight },
+    { op: 'L', x: cx - bw, y: cy + bh },
+    { op: 'Z' },
+  ]
+}
+
 function ioBox({ cx, cy, halfWidth: bw, halfHeight: bh }: SymbolBounds): PathCommand[] {
   const r = bh * 0.3
   // Rounded rect as an explicit path (rather than a native rounded-rect
@@ -177,6 +190,16 @@ export function buildGateOutline(kind: GateKind, bounds: SymbolBounds): GateOutl
         inputStubX: flatBackX,
       }
     }
+    case 'BUFFER': {
+      // Same triangle as the inverter, just without the bubble: a buffer
+      // is a NOT gate that does not invert.
+      return { body: triangleBody(bounds), outputStubX: tipX, inputStubX: flatBackX }
+    }
+    case 'MUX2': {
+      const frontX = cx + bw * 0.5
+      return { body: muxBody(bounds), outputStubX: frontX, inputStubX: flatBackX }
+    }
+    case 'DFF':
     case 'INPUT':
     case 'OUTPUT':
       return { body: ioBox(bounds), outputStubX: tipX, inputStubX: flatBackX }

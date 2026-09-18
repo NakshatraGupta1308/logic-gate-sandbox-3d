@@ -13,7 +13,18 @@ const HALF_WIDTH = GATE_WIDTH / 2
 const HALF_HEIGHT = GATE_HEIGHT / 2
 const PAD_X = HALF_WIDTH + PIN_STANDOFF
 
-const LEGEND_ORDER: GateKind[] = ['AND', 'OR', 'NOT', 'XOR', 'NAND', 'NOR', 'XNOR']
+const LEGEND_ORDER: GateKind[] = [
+  'AND',
+  'OR',
+  'NOT',
+  'XOR',
+  'NAND',
+  'NOR',
+  'XNOR',
+  'BUFFER',
+  'MUX2',
+  'DFF',
+]
 
 function drawTitle(doc: jsPDF, pageWidth: number) {
   doc.setTextColor(17, 17, 17)

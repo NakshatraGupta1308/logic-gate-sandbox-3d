@@ -16,6 +16,9 @@ const PALETTE: { kind: GateKind; label: string }[] = [
   { kind: 'NAND', label: 'NAND' },
   { kind: 'NOR', label: 'NOR' },
   { kind: 'XNOR', label: 'XNOR' },
+  { kind: 'BUFFER', label: 'Buffer' },
+  { kind: 'MUX2', label: 'Mux' },
+  { kind: 'DFF', label: 'D-FF' },
 ]
 
 export function Toolbar() {
