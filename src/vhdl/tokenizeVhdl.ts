@@ -1,18 +1,23 @@
 export interface Token {
-  /** Lowercased text for identifiers/punctuation, or the literal bit for BITLIT. */
+  /** Lowercased text for identifiers/punctuation, the literal bit for BITLIT, the digits for NUMBER, or the bit string for STRLIT. */
   text: string
-  kind: 'ident' | 'bitlit' | 'punct'
+  kind: 'ident' | 'bitlit' | 'number' | 'strlit' | 'punct'
   line: number
 }
 
-const PUNCT_PATTERN = /<=|>=|[():;,=.<>]/y
+const PUNCT_PATTERN = /<=|>=|=>|[():;,=.<>']/y
 const IDENT_PATTERN = /[A-Za-z][A-Za-z0-9_]*/y
 const BITLIT_PATTERN = /'([01])'/y
+const NUMBER_PATTERN = /[0-9]+/y
+const STRLIT_PATTERN = /"([01]*)"/y
 
 /**
  * Splits VHDL source into a flat token stream: identifiers (lowercased,
- * since VHDL is case-insensitive), quoted '0'/'1' bit literals, and the
- * small set of punctuation this dialect subset actually uses. Comments
+ * since VHDL is case-insensitive), quoted '0'/'1' bit literals, bare
+ * integers (used in vector range bounds like `(3 downto 0)`), double-quoted
+ * bit strings (multi-bit literals like "00"), and the small set of
+ * punctuation this dialect subset actually uses (including a lone `'` for
+ * an attribute like `clk'event`, and `=>` for a case choice). Comments
  * (`-- ...` to end of line) and whitespace are dropped entirely.
  */
 export function tokenizeVhdl(source: string): Token[] {
@@ -44,11 +49,27 @@ export function tokenizeVhdl(source: string): Token[] {
       continue
     }
 
+    STRLIT_PATTERN.lastIndex = i
+    const strMatch = STRLIT_PATTERN.exec(source)
+    if (strMatch && strMatch.index === i) {
+      tokens.push({ text: strMatch[1], kind: 'strlit', line })
+      i += strMatch[0].length
+      continue
+    }
+
     IDENT_PATTERN.lastIndex = i
     const identMatch = IDENT_PATTERN.exec(source)
     if (identMatch && identMatch.index === i) {
       tokens.push({ text: identMatch[0].toLowerCase(), kind: 'ident', line })
       i += identMatch[0].length
+      continue
+    }
+
+    NUMBER_PATTERN.lastIndex = i
+    const numberMatch = NUMBER_PATTERN.exec(source)
+    if (numberMatch && numberMatch.index === i) {
+      tokens.push({ text: numberMatch[0], kind: 'number', line })
+      i += numberMatch[0].length
       continue
     }
 

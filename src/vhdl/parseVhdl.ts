@@ -5,53 +5,104 @@ export type CompareOp = '=' | '<=' | '>=' | '<' | '>'
 export type Expr =
   | { type: 'ident'; name: string }
   | { type: 'bitlit'; value: '0' | '1' }
+  | { type: 'strlit'; bits: string }
+  | { type: 'indexed'; base: string; index: number }
   | { type: 'not'; operand: Expr }
   | { type: 'binop'; op: 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor'; left: Expr; right: Expr }
   | { type: 'mux'; a: Expr; b: Expr; sel: Expr }
   | { type: 'compare'; op: CompareOp; left: Expr; right: Expr }
   | { type: 'risingEdge'; signal: string }
+  | { type: 'event'; signal: string }
+
+/** A `std_logic_vector(high downto low)` or `(low to high)` range. */
+export interface VectorRange {
+  high: number
+  low: number
+  downto: boolean
+}
+
+export type VhdlType = { kind: 'bit' } | { kind: 'vector'; range: VectorRange }
+
+export function widthOf(type: VhdlType): number {
+  return type.kind === 'bit' ? 1 : type.range.high - type.range.low + 1
+}
+
+/**
+ * The VHDL indices of a vector's bits in declaration order: for `downto`,
+ * high to low (index 0 of the returned array is the leftmost/MSB bit as
+ * written); for `to`, low to high. This is also the order a same-width
+ * string literal's characters, or another vector's own bits, line up
+ * against when driving this one.
+ */
+export function declOrderIndices(range: VectorRange): number[] {
+  const indices: number[] = []
+  if (range.downto) {
+    for (let i = range.high; i >= range.low; i--) indices.push(i)
+  } else {
+    for (let i = range.low; i <= range.high; i++) indices.push(i)
+  }
+  return indices
+}
 
 export interface ParsedPort {
   name: string
   mode: 'in' | 'out'
+  type: VhdlType
 }
 
-export interface SeqAssignment {
+export interface ParsedSignal {
+  name: string
+  type: VhdlType
+}
+
+export interface ParsedAssignment {
   target: string
+  targetIndex: number | null
+  expr: Expr
+  line: number
+}
+
+export interface AssignStatement {
+  kind: 'assign'
+  target: string
+  targetIndex: number | null
   expr: Expr
 }
 
 export interface IfBranch {
   cond: Expr
-  assigns: SeqAssignment[]
+  body: Statement[]
 }
 
-export interface ParsedAssignment {
-  target: string
-  expr: Expr
-  line: number
+export interface IfStatement {
+  kind: 'if'
+  branches: IfBranch[]
+  elseBody: Statement[] | null
 }
 
-/** A `process(clk) if rising_edge(clk) then q <= d; end if;` flip-flop. */
+/** A single sequential statement inside a process: a plain assignment, or a nested if (case is desugared into this same shape). */
+export type Statement = AssignStatement | IfStatement
+
+/** A `process(clk) if rising_edge(clk) then ... end if;` flip-flop, whose body may itself contain nested if/case statements (e.g. a synchronous reset). */
 export interface ParsedDffProcess {
   kind: 'dff'
   clk: string
-  qTarget: string
-  dExpr: Expr
+  body: Statement[]
   line: number
 }
 
 /**
- * A general combinational `process` written as an if/elsif/.../else
- * priority chain (the common style for combinational logic in real VHDL).
- * An explicit final `else` is required: without one, VHDL would infer a
- * latch for any signal a shorter branch leaves unset, which has no
- * representation in this app's instant-simulation model.
+ * A general combinational `process` written as an if/elsif/.../else or
+ * case/when priority chain (the common style for combinational logic in
+ * real VHDL). An explicit final `else` (or `when others`) is required:
+ * without one, VHDL would infer a latch for any signal a shorter branch
+ * leaves unset, which has no representation in this app's instant-
+ * simulation model.
  */
 export interface ParsedCombProcess {
   kind: 'comb'
   branches: IfBranch[]
-  elseAssigns: SeqAssignment[]
+  elseBody: Statement[]
   line: number
 }
 
@@ -60,7 +111,7 @@ export type ParsedProcess = ParsedDffProcess | ParsedCombProcess
 export interface ParsedVhdl {
   entityName: string
   ports: ParsedPort[]
-  signals: string[]
+  signals: ParsedSignal[]
   assignments: ParsedAssignment[]
   processes: ParsedProcess[]
 }
@@ -124,22 +175,28 @@ class Cursor {
 
 function describe(token: Token | undefined): string {
   if (!token) return 'end of file'
-  return token.kind === 'bitlit' ? `'${token.text}'` : `"${token.text}"`
+  if (token.kind === 'bitlit') return `'${token.text}'`
+  if (token.kind === 'strlit') return `"${token.text}"`
+  return `"${token.text}"`
 }
 
 /**
- * Parses the dataflow-plus-combinational-process VHDL subset this app
- * supports: a single entity/architecture pair, `in`/`out` std_logic ports
- * and signals (single identifiers or a comma-separated list sharing one
- * declaration), concurrent boolean assignments (and/or/not/xor/nand/nor/
- * xnor, comparisons, a when/else mux), a clocked
- * `process(clk) if rising_edge(clk) then q <= d; end if;` per flip-flop,
- * and a combinational `process` written as an if/elsif/.../else priority
- * chain (which must end in an explicit `else`, since an inferred latch has
- * no representation here). Deliberately does not attempt general VHDL
- * (vector/bus types, generics, component instantiation, multiple
- * entities, latches) - anything outside this shape raises a
- * VhdlSyntaxError naming the line rather than guessing.
+ * Parses the dataflow-plus-process VHDL subset this app supports: a single
+ * entity/architecture pair, `in`/`out` ports and signals of type
+ * `std_logic` or `std_logic_vector` (single identifiers or a comma-
+ * separated list sharing one declaration), concurrent boolean assignments
+ * (and/or/not/xor/nand/nor/xnor, comparisons, a when/else mux, indexed bit
+ * references like `a(0)`, bit-string literals like "00"), a clocked
+ * `process(clk) if rising_edge(clk) then ... end if;` (or the equivalent
+ * `if (clk'event and clk = '1') then ... end if;` idiom) per flip-flop
+ * region - whose body may itself contain nested if/case statements, e.g. a
+ * synchronous reset - and a combinational `process` written as an
+ * if/elsif/.../else or case/when priority chain (which must end in an
+ * explicit `else`/`when others`, since an inferred latch has no
+ * representation here). Deliberately does not attempt general VHDL
+ * (generics, component instantiation, multiple entities) - anything
+ * outside this shape raises a VhdlSyntaxError naming the line rather than
+ * guessing.
  */
 export function parseVhdl(source: string): ParsedVhdl {
   const cursor = new Cursor(tokenizeVhdl(source))
@@ -166,8 +223,8 @@ export function parseVhdl(source: string): ParsedVhdl {
             modeToken.line,
           )
         }
-        expectType(cursor, names[0])
-        for (const name of names) ports.push({ name, mode: modeToken.text })
+        const type = parseType(cursor, names[0])
+        for (const name of names) ports.push({ name, mode: modeToken.text, type })
       } while (cursor.tryEat(';'))
     }
     cursor.eat(')')
@@ -191,14 +248,14 @@ export function parseVhdl(source: string): ParsedVhdl {
   }
   cursor.eat('is')
 
-  const signals: string[] = []
+  const signals: ParsedSignal[] = []
   while (cursor.peek()?.text === 'signal') {
     cursor.eat('signal')
     const names = parseIdentList(cursor)
     cursor.eat(':')
-    expectType(cursor, names[0])
+    const type = parseType(cursor, names[0])
     cursor.eat(';')
-    signals.push(...names)
+    for (const name of names) signals.push({ name, type })
   }
 
   cursor.eat('begin')
@@ -210,11 +267,11 @@ export function parseVhdl(source: string): ParsedVhdl {
       processes.push(parseProcess(cursor))
     } else {
       const line = cursor.peek()?.line ?? 1
-      const target = cursor.eatIdent()
+      const { target, targetIndex } = parseAssignmentTarget(cursor)
       cursor.eat('<=')
       const expr = parseExpr(cursor)
       cursor.eat(';')
-      assignments.push({ target, expr, line })
+      assignments.push({ target, targetIndex, expr, line })
     }
   }
 
@@ -233,14 +290,39 @@ function parseIdentList(cursor: Cursor): string[] {
   return names
 }
 
-function expectType(cursor: Cursor, ownerName: string) {
-  const typeToken = cursor.next()
-  if (typeToken.text !== 'std_logic') {
-    throw new VhdlSyntaxError(
-      `"${ownerName}" has type "${typeToken.text}", but only std_logic is supported`,
-      typeToken.line,
-    )
+function parseIntLiteral(cursor: Cursor): number {
+  const token = cursor.peek()
+  if (!token || token.kind !== 'number') {
+    throw new VhdlSyntaxError(`Expected an integer but found ${describe(token)}`, cursor.peek()?.line ?? 1)
   }
+  cursor.next()
+  return Number(token.text)
+}
+
+function parseType(cursor: Cursor, ownerName: string): VhdlType {
+  const typeToken = cursor.next()
+  if (typeToken.text === 'std_logic') return { kind: 'bit' }
+  if (typeToken.text === 'std_logic_vector') {
+    cursor.eat('(')
+    const first = parseIntLiteral(cursor)
+    let downto: boolean
+    if (cursor.tryEat('downto')) downto = true
+    else {
+      cursor.eat('to')
+      downto = false
+    }
+    const second = parseIntLiteral(cursor)
+    cursor.eat(')')
+    const range: VectorRange = downto ? { high: first, low: second, downto } : { high: second, low: first, downto }
+    if (range.high < range.low) {
+      throw new VhdlSyntaxError(`"${ownerName}" has an invalid range (${first} ${downto ? 'downto' : 'to'} ${second})`, typeToken.line)
+    }
+    return { kind: 'vector', range }
+  }
+  throw new VhdlSyntaxError(
+    `"${ownerName}" has type "${typeToken.text}", but only std_logic and std_logic_vector are supported`,
+    typeToken.line,
+  )
 }
 
 function parseProcess(cursor: Cursor): ParsedProcess {
@@ -250,39 +332,59 @@ function parseProcess(cursor: Cursor): ParsedProcess {
   parseIdentList(cursor) // sensitivity list; not needed downstream, every reference resolves on its own
   cursor.eat(')')
   cursor.eat('begin')
-  const ifStmt = parseIfStatement(cursor)
+  const { branches, elseBody } = parseTopStatement(cursor)
   cursor.eat('end')
   cursor.eat('process')
   cursor.eat(';')
 
-  const [onlyBranch] = ifStmt.branches
-  if (
-    ifStmt.branches.length === 1 &&
-    ifStmt.elseAssigns === null &&
-    onlyBranch.cond.type === 'risingEdge' &&
-    onlyBranch.assigns.length === 1
-  ) {
-    return {
-      kind: 'dff',
-      clk: onlyBranch.cond.signal,
-      qTarget: onlyBranch.assigns[0].target,
-      dExpr: onlyBranch.assigns[0].expr,
-      line,
-    }
+  const [onlyBranch] = branches
+  const clockSignal = branches.length === 1 && elseBody === null ? extractClockSignal(onlyBranch.cond) : null
+  if (clockSignal) {
+    return { kind: 'dff', clk: clockSignal, body: onlyBranch.body, line }
   }
 
-  if (ifStmt.elseAssigns === null) {
+  if (elseBody === null) {
     throw new VhdlSyntaxError(
-      'A process must end with an "else" branch (a signal left unset in some branch would need an inferred latch, which is not supported), unless it is a flip-flop\'s single "if rising_edge(clk) then ... end if;"',
+      'A process must end with an "else" (or "when others") branch (a signal left unset in some branch would need an inferred latch, which is not supported), unless it is a flip-flop\'s single "if rising_edge(clk) then ... end if;"',
       line,
     )
   }
-  return { kind: 'comb', branches: ifStmt.branches, elseAssigns: ifStmt.elseAssigns, line }
+  return { kind: 'comb', branches, elseBody, line }
+}
+
+/** Recognizes `rising_edge(clk)`, or the equivalent `clk'event and clk = '1'` idiom (either operand order), as the clock this branch triggers on. */
+function extractClockSignal(cond: Expr): string | null {
+  if (cond.type === 'risingEdge') return cond.signal
+  if (cond.type === 'binop' && cond.op === 'and') {
+    return matchEventAndHigh(cond.left, cond.right) ?? matchEventAndHigh(cond.right, cond.left)
+  }
+  return null
+}
+
+function matchEventAndHigh(eventSide: Expr, compareSide: Expr): string | null {
+  if (eventSide.type !== 'event') return null
+  if (
+    compareSide.type === 'compare' &&
+    compareSide.op === '=' &&
+    compareSide.left.type === 'ident' &&
+    compareSide.left.name === eventSide.signal &&
+    compareSide.right.type === 'bitlit' &&
+    compareSide.right.value === '1'
+  ) {
+    return eventSide.signal
+  }
+  return null
 }
 
 interface ParsedIfStatement {
   branches: IfBranch[]
-  elseAssigns: SeqAssignment[] | null
+  elseBody: Statement[] | null
+}
+
+/** Dispatches to whichever of `if`/`case` starts a process's (or an if-branch's) top-level statement. */
+function parseTopStatement(cursor: Cursor): ParsedIfStatement {
+  if (cursor.peek()?.text === 'case') return parseCaseStatement(cursor)
+  return parseIfStatement(cursor)
 }
 
 function parseIfStatement(cursor: Cursor): ParsedIfStatement {
@@ -291,37 +393,78 @@ function parseIfStatement(cursor: Cursor): ParsedIfStatement {
   while (cursor.tryEat('elsif')) {
     branches.push(parseIfBranch(cursor))
   }
-  const elseAssigns = cursor.tryEat('else') ? parseSeqAssignments(cursor) : null
+  const elseBody = cursor.tryEat('else') ? parseStatements(cursor) : null
   cursor.eat('end')
   cursor.eat('if')
   cursor.eat(';')
-  return { branches, elseAssigns }
+  return { branches, elseBody }
 }
 
 function parseIfBranch(cursor: Cursor): IfBranch {
   const cond = parseBinaryChain(cursor)
   cursor.eat('then')
-  const assigns = parseSeqAssignments(cursor)
-  return { cond, assigns }
+  const body = parseStatements(cursor)
+  return { cond, body }
 }
 
-function parseSeqAssignments(cursor: Cursor): SeqAssignment[] {
-  const assigns: SeqAssignment[] = []
+/** `case <expr> is (when <choice> => <statements>)+ end case;`, desugared into the same branches/elseBody shape as an if/elsif/else: each `when` becomes `selector = choice`, and `when others` becomes the else. */
+function parseCaseStatement(cursor: Cursor): ParsedIfStatement {
+  cursor.eat('case')
+  const selector = parseBinaryChain(cursor)
+  cursor.eat('is')
+
+  const branches: IfBranch[] = []
+  let elseBody: Statement[] | null = null
+  while (cursor.tryEat('when')) {
+    if (cursor.tryEat('others')) {
+      cursor.eat('=>')
+      elseBody = parseStatements(cursor)
+      break
+    }
+    const choice = parseOperand(cursor)
+    cursor.eat('=>')
+    const body = parseStatements(cursor)
+    branches.push({ cond: { type: 'compare', op: '=', left: selector, right: choice }, body })
+  }
+  cursor.eat('end')
+  cursor.eat('case')
+  cursor.eat(';')
+  return { branches, elseBody }
+}
+
+function parseStatements(cursor: Cursor): Statement[] {
+  const statements: Statement[] = []
   while (cursor.peek()?.kind === 'ident' && !isBranchKeyword(cursor.peek()!.text)) {
-    const target = cursor.eatIdent()
-    cursor.eat('<=')
-    const expr = parseExpr(cursor)
-    cursor.eat(';')
-    assigns.push({ target, expr })
+    if (cursor.peek()?.text === 'if' || cursor.peek()?.text === 'case') {
+      const { branches, elseBody } = parseTopStatement(cursor)
+      statements.push({ kind: 'if', branches, elseBody })
+    } else {
+      const { target, targetIndex } = parseAssignmentTarget(cursor)
+      cursor.eat('<=')
+      const expr = parseExpr(cursor)
+      cursor.eat(';')
+      statements.push({ kind: 'assign', target, targetIndex, expr })
+    }
   }
-  if (assigns.length === 0) {
-    throw new VhdlSyntaxError('Expected at least one signal assignment here', cursor.peek()?.line ?? 1)
+  if (statements.length === 0) {
+    throw new VhdlSyntaxError('Expected at least one statement here', cursor.peek()?.line ?? 1)
   }
-  return assigns
+  return statements
+}
+
+/** An assignment's left-hand side: a plain signal name, or one indexed bit of a vector (`y(0)`). */
+function parseAssignmentTarget(cursor: Cursor): { target: string; targetIndex: number | null } {
+  const target = cursor.eatIdent()
+  if (cursor.tryEat('(')) {
+    const targetIndex = parseIntLiteral(cursor)
+    cursor.eat(')')
+    return { target, targetIndex }
+  }
+  return { target, targetIndex: null }
 }
 
 function isBranchKeyword(text: string): boolean {
-  return text === 'elsif' || text === 'else' || text === 'end'
+  return text === 'elsif' || text === 'else' || text === 'end' || text === 'when'
 }
 
 /** Skips a `library ...;` / `use ...;` clause without interpreting it. */
@@ -393,5 +536,19 @@ function parseOperand(cursor: Cursor): Expr {
     cursor.next()
     return { type: 'bitlit', value: token.text as '0' | '1' }
   }
-  return { type: 'ident', name: cursor.eatIdent() }
+  if (token?.kind === 'strlit') {
+    cursor.next()
+    return { type: 'strlit', bits: token.text }
+  }
+  const name = cursor.eatIdent()
+  if (cursor.tryEat("'")) {
+    cursor.eat('event')
+    return { type: 'event', signal: name }
+  }
+  if (cursor.tryEat('(')) {
+    const index = parseIntLiteral(cursor)
+    cursor.eat(')')
+    return { type: 'indexed', base: name, index }
+  }
+  return { type: 'ident', name }
 }

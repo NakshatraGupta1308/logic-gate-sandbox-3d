@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Circuit, simulate } from '../engine'
+import { Circuit, simulate, type Gate } from '../engine'
 import { exportVhdl } from './exportVhdl'
 import { importVhdl } from './importVhdl'
 
@@ -654,5 +654,475 @@ describe('importVhdl: a real-world hand-written file', () => {
     expect(setDeclaredInputs(false, true, false, false, false)).toEqual([false, true, false])
     expect(setDeclaredInputs(false, false, true, false, false)).toEqual([true, false, false])
     expect(setDeclaredInputs(false, false, false, false, true)).toEqual([false, false, true])
+  })
+})
+
+describe('importVhdl: std_logic_vector ports and signals', () => {
+  it('expands a vector port into one gate per bit, and wires indexed references', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); y : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+      begin
+        y(0) <= a(1);
+        y(1) <= a(0);
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const inputs = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(inputs).toHaveLength(2)
+    expect(outputs).toHaveLength(2)
+
+    const [a1] = inputs // declaration order for "downto" is high-to-low: a(1), a(0)
+    result.circuit.toggleInput(a1.id) // a(1) = 1, a(0) = 0
+    simulate(result.circuit)
+    // y(0) <= a(1) = 1; y(1) <= a(0) = 0. outputs are created in port-declared
+    // order too, so outputs[0] is y(1) and outputs[1] is y(0).
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([false, true])
+  })
+
+  it('accepts an ascending "to" range', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(0 to 1); y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= a(0) and a(1);
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTable(result.circuit)).toEqual([[false], [false], [false], [true]])
+  })
+
+  it('drives a whole vector target from a bit-string literal', () => {
+    const vhdl = `
+      entity t is
+        port (y : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= "10";
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([true, false]) // y(1)=1, y(0)=0
+  })
+
+  it('drives a whole vector target from another vector signal', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); y : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= a;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [a1, a0] = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    result.circuit.toggleInput(a0.id)
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([false, true])
+    expect(a1).toBeDefined()
+  })
+
+  it('compares a vector against a bit-string literal as a single equality (AND of per-bit equality)', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= '1' when a = "10" else '0';
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // "a" is a 2-bit port; the '1'/'0' mux branches add a synthetic
+    // tied-high input, so sweep only the declared 2 bits, not all 3 inputs.
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([[false], [false], [true], [false]])
+  })
+
+  it('rejects indexing a name that was not declared as a vector', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= a(0);
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('not declared as a std_logic_vector')
+  })
+
+  it('rejects an out-of-range index', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= a(3);
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('out of range')
+  })
+
+  it('rejects a relational comparison other than "=" between vectors', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); b : in std_logic_vector(1 downto 0); y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        y <= '1' when a < b else '0';
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('multi-bit vectors')
+  })
+
+  it('drives each bit of a vector output independently via indexed targets (PASCLA-style ip(0) <= b(0) xor cin)', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic_vector(1 downto 0); y : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+      begin
+        y(0) <= a(1);
+        y(1) <= a(0);
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const [a1] = result.circuit.getGates().filter((g) => g.kind === 'INPUT') // decl order: a(1), a(0)
+    result.circuit.toggleInput(a1.id) // a(1)=1, a(0)=0
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    // y(1) is declared before y(0), so outputs[0]=y(1)<=a(0)=0, outputs[1]=y(0)<=a(1)=1.
+    expect(outputs.map((o) => o.inputValues[0])).toEqual([false, true])
+  })
+
+  it('rejects a vector with some bits assigned individually but not all of them', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+      begin
+        y(0) <= a;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('not all of them')
+  })
+
+  it('rejects assigning a single bit of a vector inside a clocked process', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; clk : in std_logic; q : out std_logic_vector(1 downto 0));
+      end entity t;
+      architecture rtl of t is
+        signal qs : std_logic_vector(1 downto 0);
+      begin
+        process(clk)
+        begin
+          if rising_edge(clk) then
+            qs(0) <= a;
+          end if;
+        end process;
+        q <= qs;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('clocked process')
+  })
+})
+
+describe('importVhdl: case/when statements', () => {
+  it('compiles case/when to the same priority logic as if/elsif/else, with "when others" as the default', () => {
+    const vhdl = `
+      entity t is
+        port (s : in std_logic_vector(1 downto 0); y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(s)
+        begin
+          case s is
+            when "00" => y <= '0';
+            when "01" => y <= '1';
+            when others => y <= '1';
+          end case;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // "s" is a 2-bit port; the '0'/'1' branch values add a synthetic
+    // tied-high input, so sweep only the declared 2 bits, not all 3 inputs.
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([[false], [true], [true], [true]])
+  })
+
+  it('rejects a case statement with no "when others" default', () => {
+    const vhdl = `
+      entity t is
+        port (s : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(s)
+        begin
+          case s is
+            when '0' => y <= '0';
+            when '1' => y <= '1';
+          end case;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('else')
+  })
+})
+
+describe("importVhdl: clk'event idiom and nested if inside a process", () => {
+  it("recognizes \"clk'event and clk = '1'\" as equivalent to rising_edge(clk)", () => {
+    const vhdl = `
+      entity t is
+        port (d : in std_logic; clk : in std_logic; q : out std_logic);
+      end entity t;
+      architecture rtl of t is
+        signal qs : std_logic;
+      begin
+        process(clk)
+        begin
+          if (clk'event and clk = '1') then
+            qs <= d;
+          end if;
+        end process;
+        q <= qs;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.circuit.getGates().some((g) => g.kind === 'DFF')).toBe(true)
+
+    const [d, clk] = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const [q] = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    simulate(result.circuit)
+    expect(q.inputValues[0]).toBe(false)
+    result.circuit.toggleInput(d.id)
+    result.circuit.toggleInput(clk.id) // rising edge
+    simulate(result.circuit)
+    expect(q.inputValues[0]).toBe(true)
+  })
+
+  it('supports a synchronous reset written as a nested if inside the clocked branch', () => {
+    const vhdl = `
+      entity t is
+        port (d : in std_logic; clk : in std_logic; rst : in std_logic; q : out std_logic);
+      end entity t;
+      architecture rtl of t is
+        signal qs : std_logic;
+      begin
+        process(clk)
+        begin
+          if rising_edge(clk) then
+            if (rst = '1') then
+              qs <= '0';
+            else
+              qs <= d;
+            end if;
+          end if;
+        end process;
+        q <= qs;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+
+    const [d, clk, rst] = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const [q] = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+
+    function pulseClock() {
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+      circuit.toggleInput(clk.id)
+      simulate(circuit)
+    }
+
+    circuit.toggleInput(d.id) // d = 1
+    pulseClock()
+    expect(q.inputValues[0]).toBe(true)
+
+    circuit.toggleInput(rst.id) // rst = 1
+    pulseClock()
+    expect(q.inputValues[0]).toBe(false) // reset wins over d, even though d is still 1
+  })
+
+  it('rejects a nested if inside a process that does not assign the target in every branch', () => {
+    const vhdl = `
+      entity t is
+        port (d : in std_logic; clk : in std_logic; rst : in std_logic; q : out std_logic);
+      end entity t;
+      architecture rtl of t is
+        signal qs : std_logic;
+      begin
+        process(clk)
+        begin
+          if rising_edge(clk) then
+            if (rst = '1') then
+              qs <= '0';
+            end if;
+          end if;
+        end process;
+        q <= qs;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('qs')
+  })
+})
+
+describe('importVhdl: a real-world hand-written sequential file (Moore/Mealy state machine)', () => {
+  it('imports a "detect 010 on x" sequence detector end to end, matching its expected Mealy trace', () => {
+    const vhdl = `
+      Library IEEE;
+      Use IEEE.std_logic_1164.all;
+
+      Entity SeqDet010 is
+      Port (x   : in std_logic;
+            clk : in std_logic;
+            rst : in std_logic;
+            z   : out std_logic
+            );
+      End SeqDet010;
+
+      Architecture arch01 of SeqDet010 is
+
+      signal pstate, nstate :std_logic_vector(1 downto 0);
+
+      Begin
+      Process(nstate,rst,clk)
+      Begin
+           if (clk'event and clk = '1')then
+           if (rst='1')then
+           pstate<="00";
+           else
+           pstate<=nstate;
+           End if;
+           End if;
+      End process;
+
+      process(x,pstate)
+      begin case pstate is
+           when "00" => if (x='0') then
+                           nstate <="01";
+                           else
+                           nstate <="00";
+                           end if;
+           when "01" => if (x='1') then
+                           nstate <="10";
+                           else
+                           nstate <="01";
+                           end if;
+           when "10" => if (x='0') then
+                           nstate <="01";
+                           else
+                           nstate <="00";
+                           end if;
+           When others =>nstate<="00";
+      End case;
+      End process;
+
+      Process (x,pstate)
+      Begin
+           case pstate is
+           when "00" =>z<='0';
+           when "01" =>z<='0';
+           when "10" => if (x='0') then
+                        z<='1';
+                        else
+                        z<='0';
+                        End if;
+           When others => z <='0';
+      End case;
+      End Process;
+
+      End arch01;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const circuit = result.circuit
+    const [x, clk, rst] = circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const [z] = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+
+    function setBit(gate: Gate, value: boolean) {
+      if (gate.outputValues[0] !== value) circuit.toggleInput(gate.id)
+    }
+    function pulseClock() {
+      setBit(clk, false)
+      simulate(circuit)
+      setBit(clk, true)
+      simulate(circuit)
+    }
+
+    setBit(rst, true)
+    pulseClock()
+    setBit(rst, false)
+    simulate(circuit)
+
+    // Mealy machine: z depends on the current state and x combinationally,
+    // so it is read right after setting x/before the clock edge that would
+    // advance pstate. "010" is detected with overlap allowed.
+    const sequence = [0, 1, 0, 1, 0, 0, 1, 0]
+    const expectedZ = [0, 0, 1, 0, 1, 0, 0, 1]
+    const actualZ: number[] = []
+    for (const bit of sequence) {
+      setBit(x, Boolean(bit))
+      simulate(circuit)
+      actualZ.push(z.inputValues[0] ? 1 : 0)
+      pulseClock()
+    }
+    expect(actualZ).toEqual(expectedZ)
   })
 })
