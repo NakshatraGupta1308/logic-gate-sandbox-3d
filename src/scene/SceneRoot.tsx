@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
 import { ContactShadows, OrbitControls } from '@react-three/drei'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import * as THREE from 'three'
@@ -67,6 +67,19 @@ function PendingWireLine() {
   return <primitive object={line} />
 }
 
+/** Pans camera + target together, the same way OrbitControls' own drag-pan does. */
+function panCamera(controls: OrbitControlsImpl, deltaX: number, deltaY: number, viewportHeight: number) {
+  const camera = controls.object as THREE.PerspectiveCamera
+  const targetDistance =
+    camera.position.distanceTo(controls.target) * Math.tan(((camera.fov / 2) * Math.PI) / 180)
+  const panScale = (targetDistance * 2) / viewportHeight
+  const panLeft = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0).multiplyScalar(-deltaX * panScale)
+  const panUp = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1).multiplyScalar(deltaY * panScale)
+  const pan = panLeft.add(panUp)
+  camera.position.add(pan)
+  controls.target.add(pan)
+}
+
 function CameraRig() {
   const controlsRef = useRef<OrbitControlsImpl>(null)
   const resetViewToken = useCircuitStore((s) => s.resetViewToken)
@@ -75,10 +88,45 @@ function CameraRig() {
   // circuit's walls are never closer than the camera is allowed to pull
   // back, which would otherwise clip through them.
   const boxHalfSize = useCircuitStore((s) => computeSceneExtent(s.gates))
+  const gl = useThree((state) => state.gl)
+  const size = useThree((state) => state.size)
 
   useEffect(() => {
     controlsRef.current?.reset()
   }, [resetViewToken])
+
+  // OrbitControls' own pan is bound to a right-button drag, which a laptop
+  // trackpad has no reliable way to perform - a two-finger swipe only ever
+  // reaches the page as wheel events, never a drag - so scrolling felt like
+  // "the camera can only zoom." Taking the wheel over entirely lets a plain
+  // two-finger scroll pan the camera freely instead (the same convention
+  // Figma/Miro use for a canvas), reserving a pinch gesture (which browsers
+  // report as a wheel event with ctrlKey set) or an explicit Ctrl/Cmd+scroll
+  // for zoom. Left-drag orbit and right-drag pan are untouched.
+  useEffect(() => {
+    const dom = gl.domElement
+    function handleWheel(event: WheelEvent) {
+      const controls = controlsRef.current
+      if (!controls) return
+      event.preventDefault()
+      if (event.ctrlKey) {
+        const camera = controls.object as THREE.PerspectiveCamera
+        const distance = camera.position.distanceTo(controls.target)
+        const nextDistance = THREE.MathUtils.clamp(
+          distance * Math.pow(0.995, -event.deltaY),
+          controls.minDistance,
+          controls.maxDistance,
+        )
+        const direction = camera.position.clone().sub(controls.target).normalize()
+        camera.position.copy(controls.target).addScaledVector(direction, nextDistance)
+      } else {
+        panCamera(controls, event.deltaX, event.deltaY, size.height)
+      }
+      controls.update()
+    }
+    dom.addEventListener('wheel', handleWheel, { passive: false })
+    return () => dom.removeEventListener('wheel', handleWheel)
+  }, [gl, size.height])
 
   return (
     <OrbitControls
@@ -86,6 +134,7 @@ function CameraRig() {
       enabled={!isInteracting}
       makeDefault
       enablePan
+      enableZoom={false}
       panSpeed={1.5}
       minDistance={2}
       // Kept at most boxHalfSize: a point within that radius of the origin

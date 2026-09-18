@@ -112,9 +112,10 @@ export function StartScreen({ onStart }: StartScreenProps) {
           </table>
           <p className="mt-3 text-xs font-medium text-neutral-600">
             Mouse: click a gate in the toolbar then click the workbench to place it. Drag from an
-            output pin to an input pin to wire them. Click an INPUT gate to toggle it. Orbit, zoom,
-            and pan the camera freely with the mouse. Don't want to start from scratch? Load a
-            ready-made circuit from the Examples section in the toolbar.
+            output pin to an input pin to wire them. Click an INPUT gate to toggle it. In the 3D
+            view: drag to orbit, scroll (or two-finger swipe) to pan freely, and pinch or
+            Ctrl/Cmd+scroll to zoom. Don't want to start from scratch? Load a ready-made circuit
+            from the Examples section in the toolbar.
           </p>
         </div>
       </div>
