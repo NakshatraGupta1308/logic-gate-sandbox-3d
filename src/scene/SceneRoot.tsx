@@ -112,7 +112,18 @@ export function SceneRoot() {
 
       <CameraRig />
       <Workbench />
+      {/* frames={1}: by default ContactShadows re-renders the entire scene
+          into an offscreen depth buffer plus two blur passes on every single
+          animation frame forever, whether or not anything moved - a second
+          full scene render that scales with gate count and dominates frame
+          time once a circuit has many gates. ContactShadows re-runs its
+          render body (resetting its internal frame counter) on every React
+          re-render of this component, which already happens whenever the
+          circuit changes (gates/wires state updates), so frames={1} still
+          refreshes the shadow on every real change without paying that cost
+          on every animation frame while just orbiting the camera. */}
       <ContactShadows
+        frames={1}
         position={[0, 0.003, 0]}
         opacity={0.35}
         scale={20}
