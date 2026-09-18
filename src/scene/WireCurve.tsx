@@ -19,10 +19,11 @@ interface WireCurveProps {
 
 function WireCurveComponent({ wire, fromGate, toGate }: WireCurveProps) {
   const selectedWireId = useCircuitStore((s) => s.selectedWireId)
+  const selectedWireIds = useCircuitStore((s) => s.selectedWireIds)
   const select = useCircuitStore((s) => s.select)
   const removeWire = useCircuitStore((s) => s.removeWire)
 
-  const isSelected = selectedWireId === wire.id
+  const isSelected = selectedWireId === wire.id || selectedWireIds.includes(wire.id)
   const active = fromGate.outputValues[wire.from.pin] ?? false
 
   const curve = useMemo(() => {

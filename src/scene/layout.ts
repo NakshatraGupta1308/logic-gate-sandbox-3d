@@ -36,7 +36,13 @@ export function snapToGrid(value: number, size = GRID_SIZE): number {
 }
 
 const MIN_SCENE_HALF_SIZE = 10
-const SCENE_PADDING = 3
+const MIN_SCENE_PADDING = 3
+// The margin past the farthest gate scales with the circuit's own size
+// rather than staying a fixed +3: since the 3D camera's max distance and
+// the workbench walls are both sized off this same extent, a fixed margin
+// left almost no room to pull the camera back and frame a gate near the
+// edge of a big circuit (the wall/max-distance was only ~3 units past it).
+const SCENE_PADDING_RATIO = 0.5
 
 /**
  * Half-extent the workbench (3D box walls, camera max distance, the 2D
@@ -50,5 +56,6 @@ export function computeSceneExtent(gates: Gate[]): number {
   for (const gate of gates) {
     maxCoord = Math.max(maxCoord, Math.abs(gate.position[0]), Math.abs(gate.position[2]))
   }
-  return Math.max(MIN_SCENE_HALF_SIZE, maxCoord + SCENE_PADDING)
+  const padding = Math.max(MIN_SCENE_PADDING, maxCoord * SCENE_PADDING_RATIO)
+  return Math.max(MIN_SCENE_HALF_SIZE, maxCoord + padding)
 }

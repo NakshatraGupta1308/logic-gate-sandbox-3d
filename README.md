@@ -12,13 +12,14 @@ An interactive logic gate simulator: wire up gates on a virtual workbench and wa
 - Click an `INPUT` gate to toggle it and watch the whole circuit re-simulate instantly, including combinational cycle detection and correct clocked-sequential updates for flip-flops
 - Drag gates to reposition them, with snap-to-grid placement
 - Undo/redo (toolbar buttons or Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z)
+- Select every gate and wire at once with Ctrl/Cmd+A and drag any one of them to move the whole circuit together, preserving its layout
 - Save/load a circuit to the browser's local storage
 - Built-in example circuits: Half Adder, Full Adder, and a 2-to-1 Mux
-- The workbench and camera automatically grow to fit large or imported circuits
+- The workbench and camera automatically grow to fit large or imported circuits, with enough room to comfortably pan/zoom out to any gate near the edge
 
 ### 3D view
 - Full 3D scene built with React Three Fiber, with orbit/pan/zoom camera controls
-- Toon-shaded, comic-book-styled gates with standard symbols, animated signal pulses along active wires, and a graph-paper workbench with soft contact shadows
+- Toon-shaded, comic-book-styled gates shaped like their real IEEE/ANSI schematic symbol (the same D-shape, shield, triangle, trapezoid, and inversion bubbles as the 2D view) instead of a generic box, with animated signal pulses along active wires and a graph-paper workbench with soft contact shadows
 - Optimized rendering (careful use of drei's `Html` occlusion and `ContactShadows`) so large imported circuits (hundreds of gates) stay smooth
 
 ### 2D schematic view

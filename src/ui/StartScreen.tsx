@@ -25,6 +25,7 @@ const SHORTCUTS: ShortcutRow[] = [
   { action: 'Copy selected gate', windows: 'Ctrl + C', mac: '⌘ + C' },
   { action: 'Cut selected gate/wire', windows: 'Ctrl + X', mac: '⌘ + X' },
   { action: 'Paste gate', windows: 'Ctrl + V', mac: '⌘ + V' },
+  { action: 'Select all (move together)', windows: 'Ctrl + A', mac: '⌘ + A' },
   { action: 'Delete gate/wire', windows: 'Delete or Backspace', mac: 'Delete or Backspace' },
   { action: 'Cancel wire drag', windows: 'Esc', mac: 'Esc' },
 ]

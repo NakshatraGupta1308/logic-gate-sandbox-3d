@@ -1,17 +1,17 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import type { ThreeEvent } from '@react-three/fiber'
-import { Html, RoundedBox } from '@react-three/drei'
+import { Html } from '@react-three/drei'
 import * as THREE from 'three'
-import { getGateDef, type Gate } from '../engine'
-import { GATE_DEPTH, GATE_HEIGHT, GATE_WIDTH, PIN_RADIUS, pinPosition, snapToGrid } from './layout'
+import { getGateDef, type Gate, type Vec3 } from '../engine'
+import { GATE_HEIGHT, PIN_RADIUS, pinPosition, snapToGrid } from './layout'
 import { GATE_BODY_COLOR, GATE_SYMBOL } from './gateVisuals'
+import { getGateShape3D } from './gateShape3d'
 import { GateTooltip } from './GateTooltip'
 import { usePopScale } from './usePopScale'
 import { useCircuitStore } from '../state/circuitStore'
 
 const OUTLINE_COLOR = '#161616'
 const OUTLINE_SCALE = 1.09
-const CORNER_RADIUS = 0.1
 const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
 const DRAG_THRESHOLD = 0.05
 
@@ -22,12 +22,14 @@ interface GateMeshProps {
 function GateMeshComponent({ gate }: GateMeshProps) {
   const def = getGateDef(gate.kind)
   const selectedGateId = useCircuitStore((s) => s.selectedGateId)
+  const selectedGateIds = useCircuitStore((s) => s.selectedGateIds)
   const isInteracting = useCircuitStore((s) => s.isInteracting)
   const pendingWireFrom = useCircuitStore((s) => s.pendingWireFrom)
   const hoveredPin = useCircuitStore((s) => s.hoveredPin)
   const circuit = useCircuitStore((s) => s.circuit)
   const select = useCircuitStore((s) => s.select)
   const moveGate = useCircuitStore((s) => s.moveGate)
+  const moveGatesBatch = useCircuitStore((s) => s.moveGatesBatch)
   const toggleInput = useCircuitStore((s) => s.toggleInput)
   const setInteracting = useCircuitStore((s) => s.setInteracting)
   const beginWireDrag = useCircuitStore((s) => s.beginWireDrag)
@@ -35,11 +37,14 @@ function GateMeshComponent({ gate }: GateMeshProps) {
   const completeWireDrag = useCircuitStore((s) => s.completeWireDrag)
   const pushHistory = useCircuitStore((s) => s.pushHistory)
 
-  const isSelected = selectedGateId === gate.id
+  const isGroupSelected = selectedGateIds.length > 1 && selectedGateIds.includes(gate.id)
+  const isSelected = selectedGateId === gate.id || isGroupSelected
   const isDragging = useRef(false)
   const dragMoved = useRef(false)
   const downPoint = useRef(new THREE.Vector3())
+  const groupStartPositions = useRef<Map<string, Vec3>>(new Map())
   const [isHoveredBody, setIsHoveredBody] = useState(false)
+  const { geometry, bubble, backCurveGeometry } = useMemo(() => getGateShape3D(gate.kind), [gate.kind])
 
   const { groupRef: popRef, pop } = usePopScale()
   const currentValue = gate.kind === 'OUTPUT' ? (gate.inputValues[0] ?? false) : (gate.outputValues[0] ?? false)
@@ -64,6 +69,15 @@ function GateMeshComponent({ gate }: GateMeshProps) {
     dragMoved.current = false
     dragPlane.constant = -gate.position[1]
     e.ray.intersectPlane(dragPlane, downPoint.current)
+    if (isGroupSelected) {
+      const { gates, selectedGateIds: ids } = useCircuitStore.getState()
+      const starts = new Map<string, Vec3>()
+      for (const id of ids) {
+        const g = gates.find((candidate) => candidate.id === id)
+        if (g) starts.set(id, g.position)
+      }
+      groupStartPositions.current = starts
+    }
     setInteracting(true)
   }
 
@@ -78,7 +92,17 @@ function GateMeshComponent({ gate }: GateMeshProps) {
       if (!dragMoved.current) pushHistory()
       dragMoved.current = true
     }
-    moveGate(gate.id, [snapToGrid(point.x), gate.position[1], snapToGrid(point.z)])
+    if (isGroupSelected && groupStartPositions.current.size > 0) {
+      const dx = point.x - downPoint.current.x
+      const dz = point.z - downPoint.current.z
+      const moves = Array.from(groupStartPositions.current.entries()).map(([id, position]) => ({
+        id,
+        position: [snapToGrid(position[0] + dx), position[1], snapToGrid(position[2] + dz)] as Vec3,
+      }))
+      moveGatesBatch(moves)
+    } else {
+      moveGate(gate.id, [snapToGrid(point.x), gate.position[1], snapToGrid(point.z)])
+    }
   }
 
   function handleBodyPointerUp(e: ThreeEvent<PointerEvent>) {
@@ -113,20 +137,12 @@ function GateMeshComponent({ gate }: GateMeshProps) {
       <group ref={popRef}>
         {/* Inverted-hull outline: a larger black backface-only copy behind
             the body, the standard toon-outline trick without postprocessing. */}
-        <RoundedBox
-          args={[GATE_WIDTH, GATE_HEIGHT, GATE_DEPTH]}
-          radius={CORNER_RADIUS}
-          smoothness={4}
-          scale={OUTLINE_SCALE}
-          raycast={() => null}
-        >
+        <mesh geometry={geometry} scale={OUTLINE_SCALE} raycast={() => null}>
           <meshBasicMaterial color={outlineColor} side={THREE.BackSide} />
-        </RoundedBox>
+        </mesh>
 
-        <RoundedBox
-          args={[GATE_WIDTH, GATE_HEIGHT, GATE_DEPTH]}
-          radius={CORNER_RADIUS}
-          smoothness={4}
+        <mesh
+          geometry={geometry}
           onPointerDown={handleBodyPointerDown}
           onPointerMove={handleBodyPointerMove}
           onPointerUp={handleBodyPointerUp}
@@ -139,7 +155,28 @@ function GateMeshComponent({ gate }: GateMeshProps) {
             emissive={isSelected ? '#facc15' : gate.kind === 'INPUT' && isOn ? '#fde68a' : '#000000'}
             emissiveIntensity={isSelected ? 0.6 : gate.kind === 'INPUT' && isOn ? 0.7 : 0}
           />
-        </RoundedBox>
+        </mesh>
+
+        {/* Inversion bubble (NAND/NOR/XNOR/NOT), matching the 2D symbol. */}
+        {bubble && (
+          <group position={bubble.position}>
+            <mesh scale={1.3} raycast={() => null}>
+              <sphereGeometry args={[bubble.radius, 12, 12]} />
+              <meshBasicMaterial color={outlineColor} side={THREE.BackSide} />
+            </mesh>
+            <mesh raycast={() => null}>
+              <sphereGeometry args={[bubble.radius, 12, 12]} />
+              <meshToonMaterial color="#ffffff" />
+            </mesh>
+          </group>
+        )}
+
+        {/* XOR/XNOR's extra back curve, stroke-only like the 2D symbol. */}
+        {backCurveGeometry && (
+          <mesh geometry={backCurveGeometry} raycast={() => null}>
+            <meshBasicMaterial color={outlineColor} />
+          </mesh>
+        )}
       </group>
 
       {/* No `occlude`: with occlude={true}, drei raycasts against the
