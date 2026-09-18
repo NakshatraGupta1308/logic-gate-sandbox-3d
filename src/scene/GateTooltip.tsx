@@ -71,7 +71,12 @@ export function GateInfo({ gate }: GateInfoProps) {
 /** Floating card version of GateInfo, used for the 3D hover tooltip. */
 export function GateTooltip({ gate }: GateInfoProps) {
   return (
-    <div className="w-56 rounded-xl border-[3px] border-black bg-white p-3 text-black shadow-[4px_4px_0_#000]">
+    // pointer-events-none: purely informational, and without it this DOM
+    // overlay (drei's Html renders it outside the canvas element) would
+    // swallow scroll/wheel events aimed at the gate underneath it, making
+    // the camera's wheel-driven pan/zoom silently do nothing whenever the
+    // cursor happens to be hovering a gate.
+    <div className="pointer-events-none w-56 rounded-xl border-[3px] border-black bg-white p-3 text-black shadow-[4px_4px_0_#000]">
       <GateInfo gate={gate} />
     </div>
   )

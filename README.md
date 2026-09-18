@@ -18,7 +18,7 @@ An interactive logic gate simulator: wire up gates on a virtual workbench and wa
 - The workbench and camera automatically grow to fit large or imported circuits, with enough room to comfortably pan/zoom out to any gate near the edge
 
 ### 3D view
-- Full 3D scene built with React Three Fiber, with orbit/pan/zoom camera controls
+- Full 3D scene built with React Three Fiber, with orbit/pan/zoom camera controls: drag to orbit, scroll (or a trackpad two-finger swipe) to pan freely, pinch or Ctrl/Cmd+scroll to zoom, or right-drag to pan
 - Toon-shaded, comic-book-styled gates shaped like their real IEEE/ANSI schematic symbol (the same D-shape, shield, triangle, trapezoid, and inversion bubbles as the 2D view) instead of a generic box, with animated signal pulses along active wires and a graph-paper workbench with soft contact shadows
 - Optimized rendering (careful use of drei's `Html` occlusion and `ContactShadows`) so large imported circuits (hundreds of gates) stay smooth
 
