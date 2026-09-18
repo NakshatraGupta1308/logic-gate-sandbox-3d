@@ -9,7 +9,11 @@ const PUNCT_PATTERN = /<=|>=|=>|[():;,=.<>']/y
 const IDENT_PATTERN = /[A-Za-z][A-Za-z0-9_]*/y
 const BITLIT_PATTERN = /'([01])'/y
 const NUMBER_PATTERN = /[0-9]+/y
-const STRLIT_PATTERN = /"([01]*)"/y
+// Any characters between quotes are captured as-is; the parser decides how
+// to read them (a plain std_ulogic bit string like "01XZ", or the digits of
+// a radix-prefixed literal like X"e"), so it can give a clear error for an
+// invalid character rather than the tokenizer rejecting it blind.
+const STRLIT_PATTERN = /"([^"\n]*)"/y
 
 /**
  * Splits VHDL source into a flat token stream: identifiers (lowercased,

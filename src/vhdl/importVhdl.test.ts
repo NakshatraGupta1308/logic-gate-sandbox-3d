@@ -1485,3 +1485,137 @@ describe('importVhdl: structural component instantiation', () => {
     expect(result.error.toLowerCase()).toContain('top-level')
   })
 })
+
+describe('importVhdl: hex literals and "with ... select" (selected signal assignment)', () => {
+  it('parses a X".." hex literal as its 4-bit expansion', () => {
+    const vhdl = `
+      entity t is
+        port (y : out std_logic_vector(3 downto 0));
+      end t;
+      architecture rtl of t is
+      begin
+        y <= X"b";
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(outputs.map((o) => (o.inputValues[0] ? '1' : '0')).join('')).toBe('1011') // 0xb
+  })
+
+  it('treats std_ulogic "don\'t care" characters (X, U, Z, W, -) in a bit string as 0', () => {
+    const vhdl = `
+      entity t is
+        port (y : out std_logic_vector(3 downto 0));
+      end t;
+      architecture rtl of t is
+      begin
+        y <= "1XZ0";
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    simulate(result.circuit)
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(outputs.map((o) => (o.inputValues[0] ? '1' : '0')).join('')).toBe('1000')
+  })
+
+  it('compiles a "with ... select" statement the same way as case/when', () => {
+    const vhdl = `
+      entity t is
+        port (s : in std_logic_vector(1 downto 0); y : out std_logic);
+      end t;
+      architecture rtl of t is
+      begin
+        with s select y <=
+          '0' when "00",
+          '1' when "01",
+          '1' when others;
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // "s" is a 2-bit port; the '0'/'1' branch values add a synthetic
+    // tied-high input, so sweep only the declared 2 bits, not all 3 inputs.
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([[false], [true], [true], [true]])
+  })
+
+  it('rejects a "with ... select" statement with no "when others" default', () => {
+    const vhdl = `
+      entity t is
+        port (s : in std_logic; y : out std_logic);
+      end t;
+      architecture rtl of t is
+      begin
+        with s select y <=
+          '0' when '0',
+          '1' when '1';
+      end rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('others')
+  })
+
+  it('imports a real 4-to-4-bit S-box built entirely from a "with ... select" statement and hex literals (Piccolo cipher S-box)', () => {
+    const vhdl = `
+      library IEEE;
+      use IEEE.STD_LOGIC_1164.ALL;
+      use IEEE.NUMERIC_STD.ALL;
+
+      entity piccolo_sbox is
+          Port ( a : in  STD_LOGIC_VECTOR (3 downto 0);
+                 o : out  STD_LOGIC_VECTOR (3 downto 0));
+      end piccolo_sbox;
+
+      architecture Behavioral of piccolo_sbox is
+      begin
+      with a select o <=
+          X"e" when X"0",
+          X"4" when X"1",
+          X"b" when X"2",
+          X"2" when X"3",
+          X"3" when X"4",
+          X"8" when X"5",
+          X"0" when X"6",
+          X"9" when X"7",
+          X"1" when X"8",
+          X"a" when X"9",
+          X"7" when X"a",
+          X"f" when X"b",
+          X"6" when X"c",
+          X"c" when X"d",
+          X"5" when X"e",
+          X"d" when X"f",
+          "XXXX" when others;
+      end Behavioral;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const circuit = result.circuit
+    // "a" is declared first (4 bits); the '1' bits inside the hex literals
+    // add a synthetic tied-high input after it, so take only the first 4.
+    const inputs = circuit.getGates().filter((g) => g.kind === 'INPUT').slice(0, 4)
+    const outputs = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(outputs).toHaveLength(4)
+
+    function setBit(gate: Gate, value: boolean) {
+      if (gate.outputValues[0] !== value) circuit.toggleInput(gate.id)
+    }
+
+    const sbox = ['e', '4', 'b', '2', '3', '8', '0', '9', '1', 'a', '7', 'f', '6', 'c', '5', 'd']
+    for (let i = 0; i < 16; i++) {
+      const bits = i.toString(2).padStart(4, '0')
+      inputs.forEach((gate, k) => setBit(gate, bits[k] === '1'))
+      simulate(circuit)
+      const outHex = parseInt(outputs.map((g) => (g.inputValues[0] ? '1' : '0')).join(''), 2).toString(16)
+      expect(outHex).toBe(sbox[i])
+    }
+  })
+})
