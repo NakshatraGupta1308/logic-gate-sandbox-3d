@@ -108,6 +108,31 @@ export interface ParsedCombProcess {
 
 export type ParsedProcess = ParsedDffProcess | ParsedCombProcess
 
+/** One `label => actual` (named) or bare `actual` (positional) connection in a `port map (...)`. */
+export interface PortAssociation {
+  formal: string | null
+  actual: Expr
+}
+
+/** A `label: ComponentName port map (...);` structural instantiation. Which entity `componentName` refers to is resolved later, during flattening - a component declaration in the architecture header is only ever a re-statement of an interface this parser already gets from the instantiation syntax itself, so it is skipped rather than tracked. */
+export interface ParsedInstantiation {
+  label: string
+  componentName: string
+  associations: PortAssociation[]
+  line: number
+}
+
+/** One parsed `entity ... is ... end; architecture ... is ... end;` pair. A file may contain several: one top-level design plus the sub-components it structurally instantiates (see ParsedInstantiation). */
+export interface ParsedEntity {
+  entityName: string
+  ports: ParsedPort[]
+  signals: ParsedSignal[]
+  assignments: ParsedAssignment[]
+  processes: ParsedProcess[]
+  instantiations: ParsedInstantiation[]
+}
+
+/** The single flattened design flattenVhdl.ts reduces a file's ParsedEntity[] to: one top-level entity's ports, with every instantiated sub-component's signals/assignments/processes inlined (renamed to stay unique) directly into these lists. */
 export interface ParsedVhdl {
   entityName: string
   ports: ParsedPort[]
@@ -181,12 +206,21 @@ function describe(token: Token | undefined): string {
 }
 
 /**
- * Parses the dataflow-plus-process VHDL subset this app supports: a single
- * entity/architecture pair, `in`/`out` ports and signals of type
+ * Parses a file into one or more entity/architecture pairs (see
+ * ParsedEntity) - normally just one, but a structural design instantiates
+ * sub-components whose own entity/architecture must appear somewhere in
+ * the same source, so a file may contain several. flattenVhdl.ts reduces
+ * these to the single ParsedVhdl the rest of the app works with.
+ *
+ * Within each entity/architecture pair, the supported subset is:
+ * `in`/`out` (and `inout`, silently treated as `out`, since this app's
+ * simulator has no bidirectional-wire concept) ports and signals of type
  * `std_logic` or `std_logic_vector` (single identifiers or a comma-
  * separated list sharing one declaration), concurrent boolean assignments
  * (and/or/not/xor/nand/nor/xnor, comparisons, a when/else mux, indexed bit
- * references like `a(0)`, bit-string literals like "00"), a clocked
+ * references like `a(0)`, bit-string literals like "00"), a component
+ * declaration (parsed and discarded - see ParsedInstantiation) and
+ * `label: Name port map (...)` structural instantiation, a clocked
  * `process(clk) if rising_edge(clk) then ... end if;` (or the equivalent
  * `if (clk'event and clk = '1') then ... end if;` idiom) per flip-flop
  * region - whose body may itself contain nested if/case statements, e.g. a
@@ -194,17 +228,24 @@ function describe(token: Token | undefined): string {
  * if/elsif/.../else or case/when priority chain (which must end in an
  * explicit `else`/`when others`, since an inferred latch has no
  * representation here). Deliberately does not attempt general VHDL
- * (generics, component instantiation, multiple entities) - anything
- * outside this shape raises a VhdlSyntaxError naming the line rather than
- * guessing.
+ * (generics, other port modes) - anything outside this shape raises a
+ * VhdlSyntaxError naming the line rather than guessing.
  */
-export function parseVhdl(source: string): ParsedVhdl {
+export function parseVhdl(source: string): ParsedEntity[] {
   const cursor = new Cursor(tokenizeVhdl(source))
-
-  while (cursor.peek()?.text === 'library' || cursor.peek()?.text === 'use') {
-    skipStatement(cursor)
+  const entities: ParsedEntity[] = []
+  while (!cursor.atEnd()) {
+    while (cursor.peek()?.text === 'library' || cursor.peek()?.text === 'use') {
+      skipStatement(cursor)
+    }
+    if (cursor.atEnd()) break
+    entities.push(parseEntity(cursor))
   }
+  if (entities.length === 0) throw new VhdlSyntaxError('No entity found in this file', 1)
+  return entities
+}
 
+function parseEntity(cursor: Cursor): ParsedEntity {
   cursor.eat('entity')
   const entityName = cursor.eatIdent()
   cursor.eat('is')
@@ -217,14 +258,19 @@ export function parseVhdl(source: string): ParsedVhdl {
         const names = parseIdentList(cursor)
         cursor.eat(':')
         const modeToken = cursor.next()
-        if (modeToken.text !== 'in' && modeToken.text !== 'out') {
+        // "inout" is accepted but treated as "out": this app's simulator
+        // has no bidirectional-wire concept, and a design that reads back
+        // its own inout port (rather than just driving it, the common
+        // case) would need one.
+        if (modeToken.text !== 'in' && modeToken.text !== 'out' && modeToken.text !== 'inout') {
           throw new VhdlSyntaxError(
-            `Port "${names[0]}" must be "in" or "out" (found ${describe(modeToken)}); other modes like inout are not supported`,
+            `Port "${names[0]}" must be "in", "out", or "inout" (found ${describe(modeToken)})`,
             modeToken.line,
           )
         }
+        const mode = modeToken.text === 'in' ? 'in' : 'out'
         const type = parseType(cursor, names[0])
-        for (const name of names) ports.push({ name, mode: modeToken.text, type })
+        for (const name of names) ports.push({ name, mode, type })
       } while (cursor.tryEat(';'))
     }
     cursor.eat(')')
@@ -242,14 +288,18 @@ export function parseVhdl(source: string): ParsedVhdl {
   const archEntityName = cursor.eatIdent()
   if (archEntityName !== entityName) {
     throw new VhdlSyntaxError(
-      `architecture is "of ${archEntityName}" but the entity above is "${entityName}"; only a single matching entity/architecture pair is supported`,
+      `architecture is "of ${archEntityName}" but the entity above is "${entityName}"; an architecture must immediately follow its own matching entity`,
       cursor.peek()?.line ?? 1,
     )
   }
   cursor.eat('is')
 
   const signals: ParsedSignal[] = []
-  while (cursor.peek()?.text === 'signal') {
+  while (cursor.peek()?.text === 'signal' || cursor.peek()?.text === 'component') {
+    if (cursor.tryEat('component')) {
+      skipComponentDeclaration(cursor)
+      continue
+    }
     cursor.eat('signal')
     const names = parseIdentList(cursor)
     cursor.eat(':')
@@ -262,9 +312,12 @@ export function parseVhdl(source: string): ParsedVhdl {
 
   const assignments: ParsedAssignment[] = []
   const processes: ParsedProcess[] = []
+  const instantiations: ParsedInstantiation[] = []
   while (cursor.peek() && cursor.peek()?.text !== 'end') {
     if (cursor.peek()?.text === 'process') {
       processes.push(parseProcess(cursor))
+    } else if (cursor.peek()?.kind === 'ident' && cursor.peek(1)?.text === ':') {
+      instantiations.push(parseInstantiation(cursor))
     } else {
       const line = cursor.peek()?.line ?? 1
       const { target, targetIndex } = parseAssignmentTarget(cursor)
@@ -280,7 +333,47 @@ export function parseVhdl(source: string): ParsedVhdl {
   if (cursor.peek()?.text !== ';') cursor.eatIdent()
   cursor.eat(';')
 
-  return { entityName, ports, signals, assignments, processes }
+  return { entityName, ports, signals, assignments, processes, instantiations }
+}
+
+/** A component declaration only re-states an interface the corresponding instantiation's own syntax already gives us, and its name is resolved against real entities later (see flattenVhdl.ts), so its body is skipped rather than parsed in detail. */
+function skipComponentDeclaration(cursor: Cursor) {
+  cursor.eatIdent() // component name
+  cursor.tryEat('is')
+  while (!(cursor.peek()?.text === 'end' && cursor.peek(1)?.text === 'component')) {
+    if (cursor.atEnd()) throw new VhdlSyntaxError('Unexpected end of file inside a component declaration', cursor.peek()?.line ?? 1)
+    cursor.next()
+  }
+  cursor.eat('end')
+  cursor.eat('component')
+  if (cursor.peek()?.text !== ';') cursor.eatIdent()
+  cursor.eat(';')
+}
+
+/** `label: ComponentName port map ( [formal =>] actual, ... );` - a structural instantiation of a sub-component. */
+function parseInstantiation(cursor: Cursor): ParsedInstantiation {
+  const line = cursor.peek()?.line ?? 1
+  const label = cursor.eatIdent()
+  cursor.eat(':')
+  const componentName = cursor.eatIdent()
+  cursor.eat('port')
+  cursor.eat('map')
+  cursor.eat('(')
+  const associations: PortAssociation[] = []
+  if (cursor.peek()?.text !== ')') {
+    do {
+      if (cursor.peek()?.kind === 'ident' && cursor.peek(1)?.text === '=>') {
+        const formal = cursor.eatIdent()
+        cursor.eat('=>')
+        associations.push({ formal, actual: parseExpr(cursor) })
+      } else {
+        associations.push({ formal: null, actual: parseExpr(cursor) })
+      }
+    } while (cursor.tryEat(','))
+  }
+  cursor.eat(')')
+  cursor.eat(';')
+  return { label, componentName, associations, line }
 }
 
 /** One or more comma-separated identifiers sharing a single declaration. */

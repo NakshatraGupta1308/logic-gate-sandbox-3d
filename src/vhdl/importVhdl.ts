@@ -1,5 +1,6 @@
 import type { Circuit } from '../engine'
 import { buildCircuitFromVhdl, VhdlSemanticError } from './buildCircuitFromVhdl'
+import { flattenVhdl } from './flattenVhdl'
 import { parseVhdl } from './parseVhdl'
 import { VhdlSyntaxError } from './tokenizeVhdl'
 
@@ -11,11 +12,14 @@ export type ImportVhdlResult = { ok: true; circuit: Circuit } | { ok: false; err
  * problem like a combinational cycle or a signal driven twice, comes back
  * as a plain error message naming the file's own line where possible,
  * rather than surfacing a stack trace or silently producing a wrong
- * circuit. See parseVhdl.ts for exactly which VHDL subset is supported.
+ * circuit. See parseVhdl.ts for exactly which VHDL subset is supported,
+ * and flattenVhdl.ts for how a structural design (component instances)
+ * reduces to the single flat design buildCircuitFromVhdl expects.
  */
 export function importVhdl(source: string): ImportVhdlResult {
   try {
-    const parsed = parseVhdl(source)
+    const entities = parseVhdl(source)
+    const parsed = flattenVhdl(entities)
     const circuit = buildCircuitFromVhdl(parsed)
     return { ok: true, circuit }
   } catch (error) {
