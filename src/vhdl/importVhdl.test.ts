@@ -25,6 +25,30 @@ function truthTable(circuit: Circuit): boolean[][] {
   return rows
 }
 
+/**
+ * Like truthTable, but only sweeps the first `declaredCount` INPUT gates
+ * (in port-declaration order), leaving any further ones untouched. A
+ * VHDL literal '1' tied to a signal becomes an extra synthetic INPUT gate
+ * preset to true (see buildCircuitFromVhdl.ts); sweeping it too, as plain
+ * truthTable does, would flip it off for half the rows and break every
+ * literal it feeds.
+ */
+function truthTableForDeclared(circuit: Circuit, declaredCount: number): boolean[][] {
+  const inputs = circuit.getGates().filter((g) => g.kind === 'INPUT').slice(0, declaredCount)
+  const outputs = circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+  const rows: boolean[][] = []
+  const rowCount = 1 << declaredCount
+  for (let i = 0; i < rowCount; i++) {
+    inputs.forEach((gate, k) => {
+      const bit = Boolean((i >> (declaredCount - 1 - k)) & 1)
+      if (gate.outputValues[0] !== bit) circuit.toggleInput(gate.id)
+    })
+    simulate(circuit)
+    rows.push(outputs.map((o) => o.inputValues[0]))
+  }
+  return rows
+}
+
 function buildFullAdder(): Circuit {
   const circuit = new Circuit()
   const a = circuit.addGate('INPUT')
@@ -301,5 +325,334 @@ describe('importVhdl error handling', () => {
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.error).toMatch(/Line \d+/)
+  })
+})
+
+describe('importVhdl: comma-separated declarations', () => {
+  it('accepts multiple port names sharing one mode and type', () => {
+    const vhdl = `
+      entity multi is
+        port (
+          a, b, c : in std_logic;
+          y : out std_logic
+        );
+      end entity multi;
+      architecture rtl of multi is
+      begin
+        y <= a and b and c;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.circuit.getGates().filter((g) => g.kind === 'INPUT')).toHaveLength(3)
+    expect(truthTable(result.circuit).at(-1)).toEqual([true]) // 1 and 1 and 1
+  })
+
+  it('accepts multiple signal names sharing one declaration', () => {
+    const vhdl = `
+      entity multi is
+        port (a : in std_logic; y : out std_logic);
+      end entity multi;
+      architecture rtl of multi is
+        signal s1, s2 : std_logic;
+      begin
+        s1 <= a;
+        s2 <= not s1;
+        y <= s2;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTable(result.circuit)).toEqual([[true], [false]])
+  })
+})
+
+describe('importVhdl: combinational process (if/elsif/else)', () => {
+  it('compiles a simple if/else to the right priority logic', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; b : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a, b)
+        begin
+          if (a = '1' and b = '0') then
+            y <= '1';
+          else
+            y <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([[false], [false], [true], [false]])
+  })
+
+  it('resolves an elsif chain in priority order, first match wins', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; b : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a, b)
+        begin
+          if (a = '1') then
+            y <= '1';
+          elsif (b = '1') then
+            y <= '1';
+          else
+            y <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([[false], [true], [true], [true]])
+  })
+
+  it('handles three outputs assigned across a multi-branch if/elsif/else (regression: each output must resolve independently)', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; b : in std_logic;
+              p : out std_logic; q : out std_logic; j : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a, b)
+        begin
+          if (a = '1') then
+            p <= '1'; q <= '0'; j <= '0';
+          elsif (b = '1') then
+            p <= '0'; q <= '1'; j <= '0';
+          else
+            p <= '0'; q <= '0'; j <= '1';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(truthTableForDeclared(result.circuit, 2)).toEqual([
+      [false, false, true],
+      [false, true, false],
+      [true, false, false],
+      [true, false, false],
+    ])
+  })
+
+  it('folds a literal comparison directly to the signal (or its negation) instead of building an extra gate', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a)
+        begin
+          if (a = '1') then
+            y <= '1';
+          else
+            y <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // The "a" INPUT, the "y" OUTPUT, one MUX2 for the priority chain
+    // (no extra gate for "a = '1'" itself, since that folds directly to
+    // "a"), and one synthetic tied-high INPUT for the "y <= '1'" branch.
+    expect(result.circuit.getGates()).toHaveLength(4)
+  })
+
+  it('supports a "<=" relational comparison (always true here, since std_logic has only two values)', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a)
+        begin
+          if (a <= '1') then
+            y <= '1';
+          else
+            y <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // a <= '1' is always true for a 2-valued signal, so y is always '1'
+    // regardless of "a" - it folds to a constant and never even wires "a".
+    expect(truthTableForDeclared(result.circuit, 1)).toEqual([[true], [true]])
+  })
+
+  it('a clocked process is still recognized as a DFF, not a combinational process', () => {
+    const vhdl = `
+      entity t is
+        port (d : in std_logic; clk : in std_logic; q : out std_logic);
+      end entity t;
+      architecture rtl of t is
+        signal qs : std_logic;
+      begin
+        process(clk)
+        begin
+          if rising_edge(clk) then
+            qs <= d;
+          end if;
+        end process;
+        q <= qs;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.circuit.getGates().some((g) => g.kind === 'DFF')).toBe(true)
+  })
+
+  it('rejects a process whose if/else does not assign every signal in every branch', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; p : out std_logic; q : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a)
+        begin
+          if (a = '1') then
+            p <= '1';
+            q <= '0';
+          else
+            p <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toContain('q')
+  })
+
+  it('rejects a combinational process with no final "else" branch', () => {
+    const vhdl = `
+      entity t is
+        port (a : in std_logic; y : out std_logic);
+      end entity t;
+      architecture rtl of t is
+      begin
+        process(a)
+        begin
+          if (a = '1') then
+            y <= '1';
+          elsif (a = '0') then
+            y <= '0';
+          end if;
+        end process;
+      end architecture rtl;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.toLowerCase()).toContain('else')
+  })
+})
+
+describe('importVhdl: a real-world hand-written file', () => {
+  it('imports a 5-input magnitude-comparator-style circuit end to end', () => {
+    const vhdl = `
+      library IEEE;
+      use IEEE.STD_LOGIC_1164.ALL;
+
+      entity MagComp01 is
+          Port ( A : in  STD_LOGIC;
+                 B : in  STD_LOGIC;
+                 P : out  STD_LOGIC;
+                 Q : out  STD_LOGIC;
+                 J : out  STD_LOGIC;
+                 C1 ,C2 ,C3 : IN STD_LOGIC
+                 );
+      end MagComp01;
+
+      architecture Behavioral of MagComp01 is
+
+      begin
+      PROCESS( A,B, C1,C2,C3)
+      BEGIN
+      IF ( (A ='1' AND B ='0'))THEN
+        P<= '1' ;
+        Q<='0';
+        j<='0';
+            ELSIF ((A ='0' AND B ='1')) THEN
+                P<= '0' ;
+            Q <= '1';
+                j<= '0' ;
+            ELSIF (((A ='0' AND B ='0') or (a='1' AND B='1'))AND(C1 ='1')AND (C2 ='0')AND(C3 = '0')) THEN
+              P<='1';
+              Q <= '0';
+              J<='0';
+               ELSIF (((A ='0' AND B ='0') or (a='1' AND B='1'))AND(C1 ='0')AND(C2='1')AND(C3 = '0')) THEN
+              P<='0';
+             Q<='1';
+              J<='0';
+               ELSIF (((A ='0' AND B ='0') or (a='1' AND B='1'))AND(C1 ='0')AND(C2 ='0')AND(C3 = '1')) THEN
+              P<='0';
+              Q <= '0';
+              J<='1';
+               ELSIF (((A ='0' AND B ='0') or (a='1' AND B='1'))AND(C3 <= '1')) THEN
+              P<='0';
+              Q <= '0';
+              J<='1';
+              ELSE
+              P  <='0';
+              Q  <= '0';
+              J  <= '0';
+              END IF;
+      END PROCESS;
+      end Behavioral;
+    `
+    const result = importVhdl(vhdl)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    const inputs = result.circuit.getGates().filter((g) => g.kind === 'INPUT')
+    const outputs = result.circuit.getGates().filter((g) => g.kind === 'OUTPUT')
+    expect(inputs.length).toBeGreaterThanOrEqual(5) // A, B, C1, C2, C3 (+ a synthetic tied-high input)
+    expect(outputs).toHaveLength(3) // P, Q, J
+
+    const circuit = result.circuit
+
+    function setDeclaredInputs(a: boolean, b: boolean, c1: boolean, c2: boolean, c3: boolean) {
+      const [gA, gB, gC1, gC2, gC3] = inputs
+      for (const [gate, value] of [
+        [gA, a],
+        [gB, b],
+        [gC1, c1],
+        [gC2, c2],
+        [gC3, c3],
+      ] as const) {
+        if (gate.outputValues[0] !== value) circuit.toggleInput(gate.id)
+      }
+      simulate(circuit)
+      return outputs.map((o) => o.inputValues[0])
+    }
+
+    expect(setDeclaredInputs(true, false, false, false, false)).toEqual([true, false, false])
+    expect(setDeclaredInputs(false, true, false, false, false)).toEqual([false, true, false])
+    expect(setDeclaredInputs(false, false, true, false, false)).toEqual([true, false, false])
+    expect(setDeclaredInputs(false, false, false, false, true)).toEqual([false, false, true])
   })
 })

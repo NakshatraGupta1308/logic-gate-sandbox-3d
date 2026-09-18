@@ -5,7 +5,7 @@ export interface Token {
   line: number
 }
 
-const PUNCT_PATTERN = /<=|[():;,=.]/y
+const PUNCT_PATTERN = /<=|>=|[():;,=.<>]/y
 const IDENT_PATTERN = /[A-Za-z][A-Za-z0-9_]*/y
 const BITLIT_PATTERN = /'([01])'/y
 

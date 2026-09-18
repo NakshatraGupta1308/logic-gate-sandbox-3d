@@ -1,15 +1,29 @@
 import { tokenizeVhdl, VhdlSyntaxError, type Token } from './tokenizeVhdl'
 
+export type CompareOp = '=' | '<=' | '>=' | '<' | '>'
+
 export type Expr =
   | { type: 'ident'; name: string }
   | { type: 'bitlit'; value: '0' | '1' }
   | { type: 'not'; operand: Expr }
   | { type: 'binop'; op: 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor'; left: Expr; right: Expr }
   | { type: 'mux'; a: Expr; b: Expr; sel: Expr }
+  | { type: 'compare'; op: CompareOp; left: Expr; right: Expr }
+  | { type: 'risingEdge'; signal: string }
 
 export interface ParsedPort {
   name: string
   mode: 'in' | 'out'
+}
+
+export interface SeqAssignment {
+  target: string
+  expr: Expr
+}
+
+export interface IfBranch {
+  cond: Expr
+  assigns: SeqAssignment[]
 }
 
 export interface ParsedAssignment {
@@ -18,12 +32,30 @@ export interface ParsedAssignment {
   line: number
 }
 
-export interface ParsedProcess {
-  clk: Expr
+/** A `process(clk) if rising_edge(clk) then q <= d; end if;` flip-flop. */
+export interface ParsedDffProcess {
+  kind: 'dff'
+  clk: string
   qTarget: string
   dExpr: Expr
   line: number
 }
+
+/**
+ * A general combinational `process` written as an if/elsif/.../else
+ * priority chain (the common style for combinational logic in real VHDL).
+ * An explicit final `else` is required: without one, VHDL would infer a
+ * latch for any signal a shorter branch leaves unset, which has no
+ * representation in this app's instant-simulation model.
+ */
+export interface ParsedCombProcess {
+  kind: 'comb'
+  branches: IfBranch[]
+  elseAssigns: SeqAssignment[]
+  line: number
+}
+
+export type ParsedProcess = ParsedDffProcess | ParsedCombProcess
 
 export interface ParsedVhdl {
   entityName: string
@@ -34,6 +66,7 @@ export interface ParsedVhdl {
 }
 
 const BINOPS = new Set(['and', 'or', 'xor', 'nand', 'nor', 'xnor'])
+const COMPARE_OPS = new Set(['=', '<=', '>=', '<', '>'])
 
 class Cursor {
   private pos = 0
@@ -95,15 +128,18 @@ function describe(token: Token | undefined): string {
 }
 
 /**
- * Parses the fixed dataflow VHDL subset exportVhdl.ts writes: a single
- * entity/architecture pair, `in`/`out` std_logic ports, std_logic signal
- * declarations, concurrent boolean assignments (and/or/not/xor/nand/nor/
- * xnor, a when/else mux, or a plain passthrough), and a clocked
- * `process(clk) if rising_edge(clk) then q <= d; end if; end process;`
- * block per flip-flop. Deliberately does not attempt general VHDL
- * (generics, other types, sequential statements beyond that one clocked
- * pattern, multiple entities) - anything outside this shape raises a
- * VhdlSyntaxError with a line number rather than guessing.
+ * Parses the dataflow-plus-combinational-process VHDL subset this app
+ * supports: a single entity/architecture pair, `in`/`out` std_logic ports
+ * and signals (single identifiers or a comma-separated list sharing one
+ * declaration), concurrent boolean assignments (and/or/not/xor/nand/nor/
+ * xnor, comparisons, a when/else mux), a clocked
+ * `process(clk) if rising_edge(clk) then q <= d; end if;` per flip-flop,
+ * and a combinational `process` written as an if/elsif/.../else priority
+ * chain (which must end in an explicit `else`, since an inferred latch has
+ * no representation here). Deliberately does not attempt general VHDL
+ * (vector/bus types, generics, component instantiation, multiple
+ * entities, latches) - anything outside this shape raises a
+ * VhdlSyntaxError naming the line rather than guessing.
  */
 export function parseVhdl(source: string): ParsedVhdl {
   const cursor = new Cursor(tokenizeVhdl(source))
@@ -121,17 +157,17 @@ export function parseVhdl(source: string): ParsedVhdl {
     cursor.eat('(')
     if (cursor.peek()?.text !== ')') {
       do {
-        const name = cursor.eatIdent()
+        const names = parseIdentList(cursor)
         cursor.eat(':')
         const modeToken = cursor.next()
         if (modeToken.text !== 'in' && modeToken.text !== 'out') {
           throw new VhdlSyntaxError(
-            `Port "${name}" must be "in" or "out" (found ${describe(modeToken)}); other modes like inout are not supported`,
+            `Port "${names[0]}" must be "in" or "out" (found ${describe(modeToken)}); other modes like inout are not supported`,
             modeToken.line,
           )
         }
-        expectType(cursor, name)
-        ports.push({ name, mode: modeToken.text })
+        expectType(cursor, names[0])
+        for (const name of names) ports.push({ name, mode: modeToken.text })
       } while (cursor.tryEat(';'))
     }
     cursor.eat(')')
@@ -158,11 +194,11 @@ export function parseVhdl(source: string): ParsedVhdl {
   const signals: string[] = []
   while (cursor.peek()?.text === 'signal') {
     cursor.eat('signal')
-    const name = cursor.eatIdent()
+    const names = parseIdentList(cursor)
     cursor.eat(':')
-    expectType(cursor, name)
+    expectType(cursor, names[0])
     cursor.eat(';')
-    signals.push(name)
+    signals.push(...names)
   }
 
   cursor.eat('begin')
@@ -190,6 +226,13 @@ export function parseVhdl(source: string): ParsedVhdl {
   return { entityName, ports, signals, assignments, processes }
 }
 
+/** One or more comma-separated identifiers sharing a single declaration. */
+function parseIdentList(cursor: Cursor): string[] {
+  const names = [cursor.eatIdent()]
+  while (cursor.tryEat(',')) names.push(cursor.eatIdent())
+  return names
+}
+
 function expectType(cursor: Cursor, ownerName: string) {
   const typeToken = cursor.next()
   if (typeToken.text !== 'std_logic') {
@@ -204,27 +247,81 @@ function parseProcess(cursor: Cursor): ParsedProcess {
   const line = cursor.peek()?.line ?? 1
   cursor.eat('process')
   cursor.eat('(')
-  const clk = parseExpr(cursor)
+  parseIdentList(cursor) // sensitivity list; not needed downstream, every reference resolves on its own
   cursor.eat(')')
   cursor.eat('begin')
-  cursor.eat('if')
-  cursor.eat('rising_edge')
-  cursor.eat('(')
-  const clkInCondition = parseExpr(cursor)
-  cursor.eat(')')
-  cursor.eat('then')
-  const qTarget = cursor.eatIdent()
-  cursor.eat('<=')
-  const dExpr = parseExpr(cursor)
-  cursor.eat(';')
-  cursor.eat('end')
-  cursor.eat('if')
-  cursor.eat(';')
+  const ifStmt = parseIfStatement(cursor)
   cursor.eat('end')
   cursor.eat('process')
   cursor.eat(';')
-  void clkInCondition // only the sensitivity-list clock is used; both must name the same clock in well-formed input
-  return { clk, qTarget, dExpr, line }
+
+  const [onlyBranch] = ifStmt.branches
+  if (
+    ifStmt.branches.length === 1 &&
+    ifStmt.elseAssigns === null &&
+    onlyBranch.cond.type === 'risingEdge' &&
+    onlyBranch.assigns.length === 1
+  ) {
+    return {
+      kind: 'dff',
+      clk: onlyBranch.cond.signal,
+      qTarget: onlyBranch.assigns[0].target,
+      dExpr: onlyBranch.assigns[0].expr,
+      line,
+    }
+  }
+
+  if (ifStmt.elseAssigns === null) {
+    throw new VhdlSyntaxError(
+      'A process must end with an "else" branch (a signal left unset in some branch would need an inferred latch, which is not supported), unless it is a flip-flop\'s single "if rising_edge(clk) then ... end if;"',
+      line,
+    )
+  }
+  return { kind: 'comb', branches: ifStmt.branches, elseAssigns: ifStmt.elseAssigns, line }
+}
+
+interface ParsedIfStatement {
+  branches: IfBranch[]
+  elseAssigns: SeqAssignment[] | null
+}
+
+function parseIfStatement(cursor: Cursor): ParsedIfStatement {
+  cursor.eat('if')
+  const branches: IfBranch[] = [parseIfBranch(cursor)]
+  while (cursor.tryEat('elsif')) {
+    branches.push(parseIfBranch(cursor))
+  }
+  const elseAssigns = cursor.tryEat('else') ? parseSeqAssignments(cursor) : null
+  cursor.eat('end')
+  cursor.eat('if')
+  cursor.eat(';')
+  return { branches, elseAssigns }
+}
+
+function parseIfBranch(cursor: Cursor): IfBranch {
+  const cond = parseBinaryChain(cursor)
+  cursor.eat('then')
+  const assigns = parseSeqAssignments(cursor)
+  return { cond, assigns }
+}
+
+function parseSeqAssignments(cursor: Cursor): SeqAssignment[] {
+  const assigns: SeqAssignment[] = []
+  while (cursor.peek()?.kind === 'ident' && !isBranchKeyword(cursor.peek()!.text)) {
+    const target = cursor.eatIdent()
+    cursor.eat('<=')
+    const expr = parseExpr(cursor)
+    cursor.eat(';')
+    assigns.push({ target, expr })
+  }
+  if (assigns.length === 0) {
+    throw new VhdlSyntaxError('Expected at least one signal assignment here', cursor.peek()?.line ?? 1)
+  }
+  return assigns
+}
+
+function isBranchKeyword(text: string): boolean {
+  return text === 'elsif' || text === 'else' || text === 'end'
 }
 
 /** Skips a `library ...;` / `use ...;` clause without interpreting it. */
@@ -236,40 +333,29 @@ function skipStatement(cursor: Cursor) {
 function parseExpr(cursor: Cursor): Expr {
   const left = parseBinaryChain(cursor)
   if (!cursor.tryEat('when')) return left
-
-  const condLeft = parseOperand(cursor)
-  cursor.eat('=')
-  const condRight = parseOperand(cursor)
+  const cond = parseBinaryChain(cursor)
   cursor.eat('else')
   const elseExpr = parseExpr(cursor)
-
-  const { signal, matchesHigh } = resolveCondition(condLeft, condRight, cursor)
-  // exportVhdl always writes "<b> when <sel> = '1' else <a>"; a hand-written
-  // "= '0'" flips which branch fires on a high select, so the mapping to
-  // MUX2's (a, b, sel) pins is swapped to compensate.
-  return matchesHigh
-    ? { type: 'mux', a: elseExpr, b: left, sel: signal }
-    : { type: 'mux', a: left, b: elseExpr, sel: signal }
-}
-
-function resolveCondition(left: Expr, right: Expr, cursor: Cursor): { signal: Expr; matchesHigh: boolean } {
-  const bit = left.type === 'bitlit' ? left : right.type === 'bitlit' ? right : undefined
-  const other = left.type === 'bitlit' ? right : left
-  if (!bit || other.type === 'bitlit') {
-    throw new VhdlSyntaxError(
-      'A "when" condition must compare a signal to a bit literal, e.g. sel = \'1\'',
-      cursor.peek()?.line ?? 1,
-    )
-  }
-  return { signal: other, matchesHigh: bit.value === '1' }
+  return { type: 'mux', a: elseExpr, b: left, sel: cond }
 }
 
 function parseBinaryChain(cursor: Cursor): Expr {
-  let left = parseUnary(cursor)
+  let left = parseComparison(cursor)
   while (cursor.peek()?.kind === 'ident' && BINOPS.has(cursor.peek()!.text)) {
     const op = cursor.next().text as 'and' | 'or' | 'xor' | 'nand' | 'nor' | 'xnor'
-    const right = parseUnary(cursor)
+    const right = parseComparison(cursor)
     left = { type: 'binop', op, left, right }
+  }
+  return left
+}
+
+function parseComparison(cursor: Cursor): Expr {
+  const left = parseUnary(cursor)
+  const token = cursor.peek()
+  if (token?.kind === 'punct' && COMPARE_OPS.has(token.text)) {
+    cursor.next()
+    const right = parseUnary(cursor)
+    return { type: 'compare', op: token.text as CompareOp, left, right }
   }
   return left
 }
@@ -283,9 +369,20 @@ function parseUnary(cursor: Cursor): Expr {
 
 function parseAtom(cursor: Cursor): Expr {
   if (cursor.tryEat('(')) {
+    // Full parseExpr (not parseBinaryChain) here: the closing ")" already
+    // disambiguates where the sub-expression ends, so a when/else mux
+    // nested inside parens is unambiguous even though a bare when/else is
+    // not allowed directly inside an if-condition or a mux's own sel.
     const expr = parseExpr(cursor)
     cursor.eat(')')
     return expr
+  }
+  if (cursor.peek()?.text === 'rising_edge') {
+    cursor.next()
+    cursor.eat('(')
+    const signal = cursor.eatIdent()
+    cursor.eat(')')
+    return { type: 'risingEdge', signal }
   }
   return parseOperand(cursor)
 }
