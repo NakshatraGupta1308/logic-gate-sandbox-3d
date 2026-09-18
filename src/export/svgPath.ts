@@ -1,4 +1,4 @@
-import type { PathCommand } from '../export/gateOutline'
+import type { PathCommand } from './gateOutline'
 
 /** Renders shared gate-outline path commands as an SVG path "d" attribute. */
 export function pathCommandsToSvg(commands: PathCommand[]): string {
