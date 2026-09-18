@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Gate } from '../engine'
 import { useCircuitStore } from '../state/circuitStore'
 import { GATE_Y } from '../state/constants'
-import { pinPosition, snapToGrid } from '../scene/layout'
+import { computeSceneExtent, pinPosition, snapToGrid } from '../scene/layout'
 import { GateSymbol2D } from './GateSymbol2D'
 import { Wire2D } from './Wire2D'
 import { useElementSize } from './useElementSize'
@@ -12,8 +12,7 @@ const MAJOR_COLOR = '#9aa3b0'
 const MINOR_SPACING = 0.5
 const MAJOR_SPACING = 2
 const MIN_SPAN = 3
-const MAX_SPAN = 60
-const DEFAULT_SPAN = 16
+const MAX_SPAN = 200
 const PAN_CLICK_THRESHOLD = 4 // pixels
 
 interface Camera {
@@ -22,7 +21,12 @@ interface Camera {
   span: number
 }
 
-const DEFAULT_CAMERA: Camera = { centerX: 0, centerZ: 0, span: DEFAULT_SPAN }
+// Matches the 3D scene's own dynamic sizing (see computeSceneExtent) so a
+// large built or imported circuit resets to a view that actually fits it,
+// rather than always snapping back to a small fixed default.
+function computeDefaultCamera(gates: Gate[]): Camera {
+  return { centerX: 0, centerZ: 0, span: computeSceneExtent(gates) * 2 }
+}
 
 export function SceneRoot2D() {
   const gates = useCircuitStore((s) => s.gates)
@@ -38,7 +42,7 @@ export function SceneRoot2D() {
 
   const svgRef = useRef<SVGSVGElement>(null)
   const size = useElementSize(svgRef)
-  const [camera, setCamera] = useState<Camera>(DEFAULT_CAMERA)
+  const [camera, setCamera] = useState<Camera>(() => computeDefaultCamera(gates))
 
   // Resets pan/zoom when the toolbar's "Reset View" button bumps this
   // token, shared with the 3D scene's own camera reset. Adjusting state
@@ -48,7 +52,7 @@ export function SceneRoot2D() {
   const [lastResetToken, setLastResetToken] = useState(resetViewToken)
   if (resetViewToken !== lastResetToken) {
     setLastResetToken(resetViewToken)
-    setCamera(DEFAULT_CAMERA)
+    setCamera(computeDefaultCamera(gates))
   }
 
   const viewHeight = camera.span * (size.height / size.width)
@@ -119,7 +123,10 @@ export function SceneRoot2D() {
     return () => el.removeEventListener('wheel', handleWheel)
   }, [])
 
-  const panState = useRef({ active: false, moved: false, startClientX: 0, startClientY: 0, startCamera: DEFAULT_CAMERA })
+  // The startCamera placeholder here is only ever read after a real
+  // pointerdown overwrites it with the live camera, so its exact value
+  // does not matter.
+  const panState = useRef({ active: false, moved: false, startClientX: 0, startClientY: 0, startCamera: computeDefaultCamera([]) })
 
   function handleBackgroundPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
@@ -236,7 +243,7 @@ export function SceneRoot2D() {
         </button>
         <button
           type="button"
-          onClick={() => setCamera(DEFAULT_CAMERA)}
+          onClick={() => setCamera(computeDefaultCamera(gates))}
           className="comic-btn px-2.5 py-1 text-xs font-bold"
           title="Reset zoom"
         >

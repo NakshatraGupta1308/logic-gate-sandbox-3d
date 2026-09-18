@@ -34,3 +34,21 @@ export function pinPosition(gate: Gate, isOutput: boolean, pin: number): Vec3 {
 export function snapToGrid(value: number, size = GRID_SIZE): number {
   return Math.round(value / size) * size
 }
+
+const MIN_SCENE_HALF_SIZE = 10
+const SCENE_PADDING = 3
+
+/**
+ * Half-extent the workbench (3D box walls, camera max distance, the 2D
+ * view's default zoom) needs to comfortably fit every gate, so a large
+ * built or imported circuit is not cramped into (or clipped by) a
+ * fixed-size room. Never shrinks below the original fixed size, so small
+ * circuits keep the same cozy default they always had.
+ */
+export function computeSceneExtent(gates: Gate[]): number {
+  let maxCoord = 0
+  for (const gate of gates) {
+    maxCoord = Math.max(maxCoord, Math.abs(gate.position[0]), Math.abs(gate.position[2]))
+  }
+  return Math.max(MIN_SCENE_HALF_SIZE, maxCoord + SCENE_PADDING)
+}

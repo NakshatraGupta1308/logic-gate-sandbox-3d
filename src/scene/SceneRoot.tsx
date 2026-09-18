@@ -4,10 +4,10 @@ import { ContactShadows, OrbitControls } from '@react-three/drei'
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib'
 import * as THREE from 'three'
 import { useCircuitStore } from '../state/circuitStore'
-import { BOX_HALF_SIZE, Workbench } from './Workbench'
+import { Workbench } from './Workbench'
 import { GateMesh } from './GateMesh'
 import { WireCurve } from './WireCurve'
-import { pinPosition } from './layout'
+import { computeSceneExtent, pinPosition } from './layout'
 import { buildWireCurve } from './wireCurve3d'
 
 function WireDragController() {
@@ -71,6 +71,10 @@ function CameraRig() {
   const controlsRef = useRef<OrbitControlsImpl>(null)
   const resetViewToken = useCircuitStore((s) => s.resetViewToken)
   const isInteracting = useCircuitStore((s) => s.isInteracting)
+  // Matches Workbench's own box size (see computeSceneExtent) so a large
+  // circuit's walls are never closer than the camera is allowed to pull
+  // back, which would otherwise clip through them.
+  const boxHalfSize = useCircuitStore((s) => computeSceneExtent(s.gates))
 
   useEffect(() => {
     controlsRef.current?.reset()
@@ -82,11 +86,11 @@ function CameraRig() {
       enabled={!isInteracting}
       makeDefault
       minDistance={2}
-      // Kept at most BOX_HALF_SIZE: a point within that radius of the
-      // origin can never have any single coordinate exceed it either, so
-      // this guarantees the camera can approach a wall but never end up
-      // outside the box looking back in.
-      maxDistance={BOX_HALF_SIZE}
+      // Kept at most boxHalfSize: a point within that radius of the origin
+      // can never have any single coordinate exceed it either, so this
+      // guarantees the camera can approach a wall but never end up outside
+      // the box looking back in.
+      maxDistance={boxHalfSize}
       maxPolarAngle={Math.PI / 2 - 0.02}
     />
   )
