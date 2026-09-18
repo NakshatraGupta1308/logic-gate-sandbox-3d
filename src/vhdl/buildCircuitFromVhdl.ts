@@ -2,7 +2,7 @@ import { Circuit, getGateDef } from '../engine'
 import type { Gate, GateKind, Vec3 } from '../engine'
 import { GATE_HEIGHT, GATE_WIDTH, PIN_STANDOFF, snapToGrid } from '../scene/layout'
 import { GATE_Y } from '../state/constants'
-import type { Expr, ParsedVhdl } from './parseVhdl'
+import type { CompareOp, Expr, IfBranch, ParsedVhdl, SeqAssignment } from './parseVhdl'
 
 export class VhdlSemanticError extends Error {}
 
@@ -49,9 +49,24 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
   }
 
   for (const proc of parsed.processes) {
-    requireUndefined(proc.qTarget)
-    const gate = circuit.addGate('DFF')
-    dffBySignal.set(proc.qTarget, { gate })
+    if (proc.kind === 'dff') {
+      requireUndefined(proc.qTarget)
+      const gate = circuit.addGate('DFF')
+      dffBySignal.set(proc.qTarget, { gate })
+      continue
+    }
+    // A combinational process compiles to one synthesized priority-mux
+    // expression per signal it assigns, registered exactly like a plain
+    // concurrent assignment so the rest of this function (resolveName,
+    // output wiring, the unused-definition sweep) needs no special case
+    // for where a definition came from.
+    const targets = new Set<string>()
+    for (const branch of proc.branches) for (const a of branch.assigns) targets.add(a.target)
+    for (const a of proc.elseAssigns) targets.add(a.target)
+    for (const target of targets) {
+      requireUndefined(target)
+      definitionByName.set(target, buildPriorityMuxExpr(target, proc.branches, proc.elseAssigns))
+    }
   }
 
   for (const assignment of parsed.assignments) {
@@ -105,6 +120,64 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
     return { kind: 'pin', gateId: gate.id, pin: 0 }
   }
 
+  function negate(operand: Operand): Operand {
+    return operand.kind === 'const' ? { kind: 'const', value: !operand.value } : createGate('NOT', [operand])
+  }
+
+  function evalCompareConst(op: CompareOp, a: boolean, b: boolean): boolean {
+    const av = a ? 1 : 0
+    const bv = b ? 1 : 0
+    switch (op) {
+      case '=':
+        return av === bv
+      case '<=':
+        return av <= bv
+      case '>=':
+        return av >= bv
+      case '<':
+        return av < bv
+      case '>':
+        return av > bv
+    }
+  }
+
+  /**
+   * A comparison against a constant bit always reduces to one of: always
+   * true, always false, the signal itself, or its negation - tried
+   * directly (rather than building a real comparator gate) so a common
+   * `sig = '1'`-style condition does not add gates the circuit does not
+   * need. `constIsLeft` says which side of the original `left OP right`
+   * the constant was on.
+   */
+  function foldCompareWithConst(op: CompareOp, constValue: boolean, signal: Operand, constIsLeft: boolean): Operand {
+    const whenFalse = constIsLeft ? evalCompareConst(op, constValue, false) : evalCompareConst(op, false, constValue)
+    const whenTrue = constIsLeft ? evalCompareConst(op, constValue, true) : evalCompareConst(op, true, constValue)
+    if (whenFalse === whenTrue) return { kind: 'const', value: whenFalse }
+    return whenTrue ? signal : negate(signal)
+  }
+
+  function resolveCompare(op: CompareOp, leftExpr: Expr, rightExpr: Expr): Operand {
+    const left = resolveExpr(leftExpr)
+    const right = resolveExpr(rightExpr)
+    if (left.kind === 'const' && right.kind === 'const') {
+      return { kind: 'const', value: evalCompareConst(op, left.value, right.value) }
+    }
+    if (left.kind === 'const') return foldCompareWithConst(op, left.value, right, true)
+    if (right.kind === 'const') return foldCompareWithConst(op, right.value, left, false)
+    switch (op) {
+      case '=':
+        return createGate('XNOR', [left, right])
+      case '<=':
+        return createGate('OR', [negate(left), right])
+      case '>=':
+        return createGate('OR', [left, negate(right)])
+      case '<':
+        return createGate('AND', [negate(left), right])
+      case '>':
+        return createGate('AND', [left, negate(right)])
+    }
+  }
+
   function resolveExpr(expr: Expr): Operand {
     switch (expr.type) {
       case 'bitlit':
@@ -112,11 +185,17 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
       case 'ident':
         return resolveName(expr.name)
       case 'not':
-        return createGate('NOT', [resolveExpr(expr.operand)])
+        return negate(resolveExpr(expr.operand))
       case 'binop':
         return createGate(BINOP_KIND[expr.op], [resolveExpr(expr.left), resolveExpr(expr.right)])
       case 'mux':
         return createGate('MUX2', [resolveExpr(expr.a), resolveExpr(expr.b), resolveExpr(expr.sel)])
+      case 'compare':
+        return resolveCompare(expr.op, expr.left, expr.right)
+      case 'risingEdge':
+        throw new VhdlSemanticError(
+          `rising_edge(${expr.signal}) can only be used as a flip-flop's whole "if" condition, not inside a general expression`,
+        )
     }
   }
 
@@ -160,28 +239,61 @@ export function buildCircuitFromVhdl(parsed: ParsedVhdl): Circuit {
   }
 
   for (const proc of parsed.processes) {
+    if (proc.kind !== 'dff') continue
     const dff = dffBySignal.get(proc.qTarget)!
     wireOperand(resolveExpr(proc.dExpr), dff.gate.id, 0)
-    wireOperand(resolveExpr(proc.clk), dff.gate.id, 1)
+    wireOperand(resolveName(proc.clk), dff.gate.id, 1)
   }
 
   for (const port of parsed.ports) {
     if (port.mode !== 'out') continue
-    const definition = definitionByName.get(port.name)
-    if (!definition) {
+    if (!definitionByName.has(port.name)) {
       throw new VhdlSemanticError(`Output port "${port.name}" is never assigned a value`)
     }
     const outputGate = circuit.addGate('OUTPUT')
-    wireOperand(resolveExpr(definition), outputGate.id, 0)
+    // Via resolveName (which caches by name), not a direct resolveExpr, so
+    // the sweep below sees this name already resolved instead of building
+    // a second, unwired copy of the same logic.
+    wireOperand(resolveName(port.name), outputGate.id, 0)
   }
 
   // Also resolve any signal that no output (or anything else) ends up
   // referencing, purely so a stray unused definition still surfaces the
   // same errors (undefined reference, cycle) it would if it mattered.
+  // Already-resolved names (every output, by now) are cache hits here.
   for (const name of definitionByName.keys()) resolveName(name)
 
   layoutCircuit(circuit)
   return circuit
+}
+
+/**
+ * Synthesizes the single expression a signal's if/elsif/.../else priority
+ * chain reduces to: starting from the final "else" value and wrapping
+ * outward through each condition in reverse, so the outermost (and
+ * therefore first-checked) mux is the original "if" branch, matching
+ * VHDL's top-to-bottom priority. Errors if `target` is not assigned in
+ * every branch, since a gap would need an inferred latch.
+ */
+function buildPriorityMuxExpr(target: string, branches: IfBranch[], elseAssigns: SeqAssignment[]): Expr {
+  const findValue = (assigns: SeqAssignment[]) => assigns.find((a) => a.target === target)?.expr
+
+  let result = findValue(elseAssigns)
+  if (!result) {
+    throw new VhdlSemanticError(
+      `"${target}" is not assigned in a process's final "else" branch (every signal must be assigned in every branch, since an inferred latch is not supported)`,
+    )
+  }
+  for (let i = branches.length - 1; i >= 0; i--) {
+    const value = findValue(branches[i].assigns)
+    if (!value) {
+      throw new VhdlSemanticError(
+        `"${target}" is assigned in some branches of a process but not all of them (every signal must be assigned in every branch, since an inferred latch is not supported)`,
+      )
+    }
+    result = { type: 'mux', a: result, b: value, sel: branches[i].cond }
+  }
+  return result
 }
 
 /** Recognizes exportVhdl.ts's `<name> <= not <dffQSignal>;` Q-bar pattern. */
