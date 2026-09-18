@@ -1,15 +1,9 @@
 import type { ThreeEvent } from '@react-three/fiber'
 import { GATE_Y } from '../state/circuitStore'
 import { useCircuitStore } from '../state/circuitStore'
-import { snapToGrid } from './layout'
+import { computeSceneExtent, snapToGrid } from './layout'
 import { GridLines, GridSurface } from './GridSurface'
 
-// SceneRoot's CameraRig uses this as OrbitControls' maxDistance too: a point
-// within that radius of the origin can never have any single coordinate
-// exceed it either, so clamping the camera to at most BOX_HALF_SIZE away
-// guarantees it can get arbitrarily close to a wall but never end up
-// outside the box looking back in.
-export const BOX_HALF_SIZE = 10
 const WALL_HEIGHT = 7
 
 export function Workbench() {
@@ -20,6 +14,11 @@ export function Workbench() {
   const updateDragPoint = useCircuitStore((s) => s.updateDragPoint)
   const cancelWireDrag = useCircuitStore((s) => s.cancelWireDrag)
   const setInteracting = useCircuitStore((s) => s.setInteracting)
+  // Grows to fit every gate (see computeSceneExtent) rather than a fixed
+  // size, so a large built or imported circuit is not cramped into a
+  // small room. SceneRoot's CameraRig computes the same value for its
+  // OrbitControls maxDistance, so the two always stay in sync.
+  const boxHalfSize = useCircuitStore((s) => computeSceneExtent(s.gates))
 
   function handleClick(e: ThreeEvent<MouseEvent>) {
     e.stopPropagation()
@@ -42,7 +41,7 @@ export function Workbench() {
     setInteracting(false)
   }
 
-  const size = BOX_HALF_SIZE * 2
+  const size = boxHalfSize * 2
 
   return (
     <group>
@@ -71,24 +70,24 @@ export function Workbench() {
       <GridSurface
         width={size}
         height={WALL_HEIGHT}
-        position={[0, WALL_HEIGHT / 2, -BOX_HALF_SIZE]}
+        position={[0, WALL_HEIGHT / 2, -boxHalfSize]}
       />
       <GridSurface
         width={size}
         height={WALL_HEIGHT}
-        position={[0, WALL_HEIGHT / 2, BOX_HALF_SIZE]}
+        position={[0, WALL_HEIGHT / 2, boxHalfSize]}
         rotation={[0, Math.PI, 0]}
       />
       <GridSurface
         width={size}
         height={WALL_HEIGHT}
-        position={[BOX_HALF_SIZE, WALL_HEIGHT / 2, 0]}
+        position={[boxHalfSize, WALL_HEIGHT / 2, 0]}
         rotation={[0, -Math.PI / 2, 0]}
       />
       <GridSurface
         width={size}
         height={WALL_HEIGHT}
-        position={[-BOX_HALF_SIZE, WALL_HEIGHT / 2, 0]}
+        position={[-boxHalfSize, WALL_HEIGHT / 2, 0]}
         rotation={[0, Math.PI / 2, 0]}
       />
     </group>
