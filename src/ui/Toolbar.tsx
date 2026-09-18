@@ -3,6 +3,8 @@ import type { GateKind } from '../engine'
 import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
 import { PRESETS, PRESET_ORDER } from '../state/presets'
+import { downloadText } from '../vhdl/downloadText'
+import { exportVhdl } from '../vhdl/exportVhdl'
 
 const COLLAPSED_KEY = 'logic-gate-sandbox-3d:toolbar-collapsed'
 
@@ -63,6 +65,11 @@ export function Toolbar() {
     // initial bundle.
     const { exportSchematicPdf } = await import('../export/exportSchematicPdf')
     exportSchematicPdf(gates, wires)
+  }
+
+  function handleExportVhdl() {
+    const vhdl = exportVhdl(gates, wires)
+    downloadText('circuit.vhd', vhdl)
   }
 
   if (collapsed) {
@@ -188,6 +195,14 @@ export function Toolbar() {
           className="comic-btn px-2.5 py-1.5 text-xs font-bold"
         >
           Export PDF
+        </button>
+        <button
+          type="button"
+          onClick={handleExportVhdl}
+          title="Save the current circuit as a VHDL (.vhd) file"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Export VHDL
         </button>
       </div>
     </div>
