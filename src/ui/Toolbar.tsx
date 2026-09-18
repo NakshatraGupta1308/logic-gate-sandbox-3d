@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import type { GateKind } from '../engine'
 import { GATE_SYMBOL } from '../scene/gateVisuals'
 import { useCircuitStore } from '../state/circuitStore'
@@ -39,6 +40,9 @@ export function Toolbar() {
   const wires = useCircuitStore((s) => s.wires)
   const viewMode = useCircuitStore((s) => s.viewMode)
   const setViewMode = useCircuitStore((s) => s.setViewMode)
+  const importVhdlCircuit = useCircuitStore((s) => s.importVhdlCircuit)
+
+  const vhdlFileInputRef = useRef<HTMLInputElement>(null)
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -70,6 +74,14 @@ export function Toolbar() {
   function handleExportVhdl() {
     const vhdl = exportVhdl(gates, wires)
     downloadText('circuit.vhd', vhdl)
+  }
+
+  async function handleVhdlFileChosen(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-choosing the same file later
+    if (!file) return
+    const source = await file.text()
+    importVhdlCircuit(source)
   }
 
   if (collapsed) {
@@ -204,6 +216,21 @@ export function Toolbar() {
         >
           Export VHDL
         </button>
+        <button
+          type="button"
+          onClick={() => vhdlFileInputRef.current?.click()}
+          title="Replace the current circuit with one built from a VHDL (.vhd) file"
+          className="comic-btn px-2.5 py-1.5 text-xs font-bold"
+        >
+          Import VHDL
+        </button>
+        <input
+          ref={vhdlFileInputRef}
+          type="file"
+          accept=".vhd,.vhdl,text/plain"
+          onChange={handleVhdlFileChosen}
+          className="hidden"
+        />
       </div>
     </div>
   )

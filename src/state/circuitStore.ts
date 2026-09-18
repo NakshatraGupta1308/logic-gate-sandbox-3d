@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { Circuit, simulate } from '../engine'
 import type { CircuitSnapshot, Gate, GateKind, Vec3, Wire } from '../engine'
+import { importVhdl } from '../vhdl/importVhdl'
 import { GATE_Y } from './constants'
 import { PRESETS, type PresetName } from './presets'
 
@@ -80,6 +81,7 @@ interface CircuitState {
   resetView: () => void
   saveToStorage: () => void
   loadFromStorage: () => void
+  importVhdlCircuit: (source: string) => void
 
   /** Records the current circuit as an undo point. Call before a mutation. */
   pushHistory: () => void
@@ -383,6 +385,28 @@ export const useCircuitStore = create<CircuitState>((set, get) => ({
     } catch {
       set({ statusMessage: 'Could not load: saved data is corrupt.' })
     }
+  },
+
+  importVhdlCircuit: (source) => {
+    const result = importVhdl(source)
+    if (!result.ok) {
+      set({ statusMessage: `VHDL import failed: ${result.error}` })
+      return
+    }
+    const { pushHistory, resetViewToken } = get()
+    pushHistory()
+    set({
+      circuit: result.circuit,
+      ...refresh(result.circuit),
+      selectedGateId: null,
+      selectedWireId: null,
+      placingKind: null,
+      statusMessage: 'VHDL file imported.',
+      // An imported circuit's size has nothing to do with whatever was
+      // last in view, so start from a fresh, fitted camera rather than
+      // risk it landing mostly (or entirely) off-screen.
+      resetViewToken: resetViewToken + 1,
+    })
   },
 
   pushHistory: () => {
