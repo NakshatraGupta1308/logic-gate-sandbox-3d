@@ -10,6 +10,9 @@ export const GATE_SYMBOL: Record<GateKind, string> = {
   NAND: '⊼',
   NOR: '⊽',
   XNOR: '⊙',
+  BUFFER: '▷',
+  MUX2: '⋔',
+  DFF: '▤',
 }
 
 export const GATE_DESCRIPTION: Record<GateKind, string> = {
@@ -22,6 +25,9 @@ export const GATE_DESCRIPTION: Record<GateKind, string> = {
   NAND: 'Outputs false only when both inputs are true (inverted AND).',
   NOR: 'Outputs true only when both inputs are false (inverted OR).',
   XNOR: 'Outputs true when both inputs match.',
+  BUFFER: 'Passes its input straight through unchanged.',
+  MUX2: 'Selects input A when select is false, input B when select is true.',
+  DFF: 'D flip-flop: latches its D input into Q on every rising edge of CLK, and holds Q otherwise.',
 }
 
 /** Bright, saturated per-kind body color for the comic-book palette. */
@@ -35,6 +41,9 @@ export const GATE_BODY_COLOR: Record<GateKind, string> = {
   XNOR: '#eab308',
   INPUT: '#f59e0b',
   OUTPUT: '#e5e7eb',
+  BUFFER: '#0ea5e9',
+  MUX2: '#84cc16',
+  DFF: '#64748b',
 }
 
 export interface TruthRow {
@@ -45,7 +54,10 @@ export interface TruthRow {
 /** Enumerates every input combination for a gate, in FF/FT/TF/TT order. */
 export function getTruthTable(kind: GateKind): TruthRow[] | null {
   const def = GATE_DEFS[kind]
-  if (def.numInputs === 0 || def.numOutputs === 0) return null
+  // A sequential gate's output depends on history (its stored state, and
+  // when its clock last rose), not just its current inputs, so there is
+  // no fixed table to enumerate.
+  if (def.numInputs === 0 || def.numOutputs === 0 || def.sequential) return null
 
   const rowCount = 1 << def.numInputs
   const rows: TruthRow[] = []

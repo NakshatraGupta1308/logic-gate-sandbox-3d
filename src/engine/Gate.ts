@@ -69,6 +69,43 @@ export const GATE_DEFS: Record<GateKind, GateDef> = {
     numOutputs: 1,
     evaluate: (inputs) => [Boolean(inputs[0]) === Boolean(inputs[1])],
   },
+  BUFFER: {
+    kind: 'BUFFER',
+    label: 'BUFFER',
+    numInputs: 1,
+    numOutputs: 1,
+    evaluate: (inputs) => [inputs[0] ?? false],
+  },
+  MUX2: {
+    kind: 'MUX2',
+    label: 'MUX',
+    // Pin 0: input A, pin 1: input B, pin 2: select. Select low (false)
+    // passes A through, select high (true) passes B, matching the
+    // conventional "sel='0' -> a, sel='1' -> b" reading used by the VHDL
+    // export's `when/else` codegen.
+    numInputs: 3,
+    numOutputs: 1,
+    evaluate: (inputs) => [inputs[2] ? (inputs[1] ?? false) : (inputs[0] ?? false)],
+  },
+  DFF: {
+    kind: 'DFF',
+    label: 'D-FF',
+    // Pin 0: D, pin 1: CLK. Outputs: pin 0 Q, pin 1 the inverted Q.
+    numInputs: 2,
+    numOutputs: 2,
+    sequential: true,
+    // Never actually drives the outputs (updateState does, gated by a
+    // clock edge); this is only a reasonable fallback for any code that
+    // might call evaluate() on every gate uniformly.
+    evaluate: (inputs) => [inputs[0] ?? false, !(inputs[0] ?? false)],
+    updateState: (gate) => {
+      const d = gate.inputValues[0] ?? false
+      const clk = gate.inputValues[1] ?? false
+      const risingEdge = clk && !(gate.prevClock ?? false)
+      if (risingEdge) gate.outputValues = [d, !d]
+      gate.prevClock = clk
+    },
+  },
 }
 
 export function getGateDef(kind: GateKind): GateDef {

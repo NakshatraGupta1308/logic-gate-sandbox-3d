@@ -36,12 +36,19 @@ export class Circuit {
 
   addGate(kind: GateKind, position: Vec3 = [0, 0, 0]): Gate {
     const def = getGateDef(kind)
+    const noInputs = new Array(def.numInputs).fill(false)
     const gate: Gate = {
       id: makeId('gate'),
       kind,
       position,
-      inputValues: new Array(def.numInputs).fill(false),
-      outputValues: new Array(def.numOutputs).fill(false),
+      inputValues: noInputs,
+      // A combinational gate starts all-false regardless of what it would
+      // actually compute from no input (matching every gate's behavior
+      // before sequential ones existed). A sequential gate has no such
+      // "not evaluated yet" state to fall back on, so it starts from its
+      // defined reset behavior instead: for a DFF that is its own
+      // evaluate() with D and CLK both low, i.e. Q=0, Q-bar=1.
+      outputValues: def.sequential ? def.evaluate(noInputs) : new Array(def.numOutputs).fill(false),
     }
     this.gates.set(gate.id, gate)
     return gate
@@ -140,7 +147,16 @@ export class Circuit {
     this.wires.delete(wireId)
   }
 
-  /** Depth-first search: is there a directed path from `start` to `end`? */
+  /**
+   * Depth-first search: is there a directed path from `start` to `end`
+   * that only crosses gates instantaneously (i.e. never passes through a
+   * sequential gate's input-to-output boundary)? A sequential gate's
+   * output does not instantly follow its input, so feedback that
+   * necessarily routes through one (the standard register/counter
+   * pattern, e.g. a DFF's Q feeding back into its own D through some
+   * combinational logic) is not a combinational cycle and must stay
+   * allowed; a path built entirely from combinational gates still is one.
+   */
   private hasPath(start: string, end: string): boolean {
     if (start === end) return true
     const visited = new Set<string>()
@@ -150,6 +166,8 @@ export class Circuit {
       if (current === end) return true
       if (visited.has(current)) continue
       visited.add(current)
+      const gate = this.gates.get(current)
+      if (gate && getGateDef(gate.kind).sequential) continue
       for (const wire of this.wires.values()) {
         if (wire.from.gateId === current) stack.push(wire.to.gateId)
       }

@@ -164,6 +164,7 @@ function restoreCircuitFromSnapshot(snapshot: CircuitSnapshot): Circuit {
     idMap.set(gate.id, restored.id)
     restored.inputValues = [...gate.inputValues]
     restored.outputValues = [...gate.outputValues]
+    restored.prevClock = gate.prevClock
   }
   for (const wire of snapshot.wires) {
     circuit.addWire(
